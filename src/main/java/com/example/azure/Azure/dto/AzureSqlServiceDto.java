@@ -28,4 +28,5 @@ public class AzureSqlServiceDto {
     private String elasticPoolName;
     private List<SqlDatabaseUsageMetric> usageMetrics;
     private double databaseCost;
+    private List<String> costOptimization;
 }

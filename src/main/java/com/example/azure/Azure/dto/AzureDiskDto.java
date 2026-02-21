@@ -2,6 +2,8 @@ package com.example.azure.Azure.dto;
 
 import lombok.*;
 
+import java.util.List;
+
 @AllArgsConstructor
 @NoArgsConstructor
 @Data
@@ -21,4 +23,5 @@ public class AzureDiskDto {
     private Long diskMBpsReadOnly;
     private Long diskMBpsReadWrite;
     private double diskCost;
+    private List<String> costOptimization;
 }

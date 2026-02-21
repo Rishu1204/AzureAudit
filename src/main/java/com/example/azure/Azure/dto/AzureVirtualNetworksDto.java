@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 @AllArgsConstructor
 @Data
 @Builder
@@ -20,9 +22,10 @@ public class AzureVirtualNetworksDto {
     private boolean enableDdosProtection;
     private String ddosProtectionPlanId;
     private String dhcpOptions;
-    private String dnsServerIps;
+    private List<String> dnsServerIps;
     private boolean enableVmProtection;
     private String eTag;
     private String resourceGuid;
+    private List<String> costOptimization;
 
 }

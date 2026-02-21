@@ -15,8 +15,6 @@ import com.azure.resourcemanager.managementgroups.ManagementGroupsManager;
 import com.azure.resourcemanager.monitor.MonitorManager;
 import com.azure.resourcemanager.monitor.fluent.models.MetricInner;
 import com.azure.resourcemanager.monitor.fluent.models.ResponseInner;
-import com.azure.resourcemanager.monitor.models.Metric;
-import com.azure.resourcemanager.monitor.models.MetricCollection;
 import com.azure.resourcemanager.monitor.models.MetricValue;
 import com.azure.resourcemanager.monitor.models.TimeSeriesElement;
 import com.azure.resourcemanager.postgresql.PostgreSqlManager;
@@ -63,6 +61,7 @@ public class AzureVirtualMachineService {
 
     private final AzureProperties azureConfig;
     private final CostService costService;
+    private final CostRecommendationImpl costRecommendation;
 
     public List<AzureInventoryResponse> fetchInventory() {
         List<AzureInventoryResponse> responses = new ArrayList<>();
@@ -71,7 +70,7 @@ public class AzureVirtualMachineService {
             Map<String, Map<String, Object>> costAnalysis = costService.getCostAnalysis(subscriptionId);
             log.info("Fetching inventory for subscription: {}", subscriptionId);
             AzureResourceManager azure = buildAzureClient(subscriptionId);
-            ExecutorService executor = Executors.newFixedThreadPool(10);
+            ExecutorService executor = Executors.newFixedThreadPool(20);
             try {
                 CompletableFuture<List<AzureVirtualMachineDto>> vms =
                         supplyAsyncSafe(() -> fetchVirtualMachines(azure, costAnalysis, subscriptionId), executor);
@@ -214,13 +213,14 @@ public class AzureVirtualMachineService {
                     .peakMemory(calculateMetric(vm.id(), "Available Memory Bytes", "Maximum", 7, true, subscriptionId))
                     .vmCost(calculateCost(costExplorer, vm.innerModel().name().toLowerCase()))
                     .build();
+            dto.setCostOptimization(costRecommendation.generateVmCostRecommendations(dto));
             result.add(dto);
         });
         return result;
     }
 
     private double calculateMetric(String resourceId, String metricName, String aggregationType,
-            int days, boolean convertToGb, String subscriptionId) {
+                                   int days, boolean convertToGb, String subscriptionId) {
 
         TokenCredential credential = new ClientSecretCredentialBuilder()
                 .tenantId(azureConfig.getTenantId())
@@ -320,8 +320,7 @@ public class AzureVirtualMachineService {
     }
 
 
-
-    private String extractLastSegment(String referenceString){
+    private String extractLastSegment(String referenceString) {
         return referenceString.substring(referenceString.lastIndexOf("/") + 1);
     }
 
@@ -346,13 +345,12 @@ public class AzureVirtualMachineService {
                     .dhcpOptions(network.innerModel().dhcpOptions() != null
                             ? String.join(",", network.innerModel().dhcpOptions().dnsServers())
                             : null)
-                    .dnsServerIps(network.dnsServerIPs() != null
-                            ? String.join(",", network.dnsServerIPs())
-                            : null)
+                    .dnsServerIps(network.dnsServerIPs())
                     .enableVmProtection(network.isVmProtectionEnabled())
                     .eTag(network.innerModel().etag())
                     .resourceGuid(network.innerModel().resourceGuid())
                     .build();
+            dto.setCostOptimization(costRecommendation.generateVnetCostRecommendations(dto));
             result.add(dto);
         });
         return result;
@@ -367,28 +365,25 @@ public class AzureVirtualMachineService {
             List<String> containerNames = new ArrayList<>();
             List<String> queueNames = new ArrayList<>();
             try {
-                String key = storage.getKeys().get(0).value();
-                String connectionString =
-                        "DefaultEndpointsProtocol=https;" +
-                                "AccountName=" + storage.name() + ";" +
-                                "AccountKey=" + key + ";" +
-                                "EndpointSuffix=core.windows.net";
                 BlobServiceClient blobServiceClient =
                         new BlobServiceClientBuilder()
-                                .connectionString(connectionString)
+                                .endpoint("https://" + storage.name() + ".blob.core.windows.net")
+                                .credential(buildCredentials())
                                 .buildClient();
-                blobServiceClient.listBlobContainers()
-                        .forEach(container -> containerNames.add(container.getName()));
+
+                blobServiceClient.listBlobContainers().forEach(container -> containerNames.add(container.getName()));
                 log.info("Fetched {} blob containers for storage account: {}", containerNames.size(), storage.name());
                 QueueServiceClient queueServiceClient =
                         new QueueServiceClientBuilder()
-                                .connectionString(connectionString)
+                                .endpoint("https://" + storage.name() + ".queue.core.windows.net")
+                                .credential(buildCredentials())
                                 .buildClient();
-                queueServiceClient.listQueues()
-                        .forEach(queue -> queueNames.add(queue.getName()));
+
+                queueServiceClient.listQueues().forEach(queue -> queueNames.add(queue.getName()));
                 log.info("Fetched {} queues for storage account: {}", queueNames.size(), storage.name());
             } catch (Exception ex) {
-                log.error("Error accessing storage data plane for account: {}", storage.name(), ex);
+                log.error("Error accessing storage data plane for account: {}",
+                        storage.name(), ex);
             }
             AzureStorageAccountDto dto = AzureStorageAccountDto.builder()
                     .name(storage.name())
@@ -403,7 +398,7 @@ public class AzureVirtualMachineService {
                     .queueNames(queueNames)
                     .storageAccountCost(calculateCost(costExplorer, storage.innerModel().name().toLowerCase()))
                     .build();
-
+            dto.setCostOptimization(costRecommendation.generateStorageCostRecommendations(dto));
             result.add(dto);
         });
 
@@ -432,6 +427,7 @@ public class AzureVirtualMachineService {
                     .diskMBpsReadWrite(Optional.ofNullable(disk.innerModel().diskMBpsReadWrite()).orElse(0L))
                     .diskCost(calculateCost(costExplorer, disk.innerModel().name().toLowerCase()))
                     .build();
+            dto.setCostOptimization(costRecommendation.generateDiskCostRecommendations(dto));
             result.add(dto);
         });
         return result;
@@ -463,7 +459,7 @@ public class AzureVirtualMachineService {
         List<AzureWebAppDto> result = new ArrayList<>();
         log.info("Fetching web apps...");
         azure.webApps().list().forEach(webApp -> {
-        log.info("Processing web app: {} in resource group: {}", webApp.name(), webApp.resourceGroupName());
+            log.info("Processing web app: {} in resource group: {}", webApp.name(), webApp.resourceGroupName());
             AzureWebAppDto dto = AzureWebAppDto.builder()
                     .name(webApp.name())
                     .id(webApp.id())
@@ -631,6 +627,7 @@ public class AzureVirtualMachineService {
                             .elasticPoolName(sqlDatabase.elasticPoolName())
                             .databaseCost(calculateCost(costExplorer, sqlDatabase.name()))
                             .build();
+                    sqlServiceDto.setCostOptimization(costRecommendation.generateSqlCostRecommendations(sqlServiceDto));
                     inventoryList.add(sqlServiceDto);
                 });
             });
@@ -1063,7 +1060,7 @@ public class AzureVirtualMachineService {
     }
 
     private List<AzurePublicIpsDto> fetchPublicIps(AzureResourceManager azure,
-                                                              Map<String, Map<String, Object>> costExplorer) {
+                                                   Map<String, Map<String, Object>> costExplorer) {
         List<AzurePublicIpsDto> result = new ArrayList<>();
         log.info("Fetching Public Ips...");
         azure.publicIpAddresses().list().forEach(ip -> {
@@ -1083,6 +1080,7 @@ public class AzureVirtualMachineService {
                             : null)
                     .publicIpCost(calculateCost(costExplorer, ip.name().toLowerCase()))
                     .build();
+            dto.setCostOptimization(costRecommendation.generatePublicIpCostRecommendations(dto));
             result.add(dto);
         });
         return result;

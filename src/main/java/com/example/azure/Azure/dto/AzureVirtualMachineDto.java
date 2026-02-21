@@ -29,5 +29,6 @@ public class AzureVirtualMachineDto {
     private double peakCpu;
     private double peakMemory;
     private double vmCost;
+    private List<String> costOptimization;
 
 }

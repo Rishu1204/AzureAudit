@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 @AllArgsConstructor
 @Data
 @Builder
@@ -19,4 +21,5 @@ public class AzurePublicIpsDto {
     private String publicIpAddressVersion;
     private String publicIpAddressType;
     private double publicIpCost;
+    private List<String> costOptimization;
 }
