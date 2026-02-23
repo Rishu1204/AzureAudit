@@ -21,4 +21,6 @@ public class AzureContainerInstancesDto {
     private String dnsName;
     private int containerCount;
     private String restartPolicy;
+    private double avgCpuUsage;
+    private double avgMemoryUsageMb;
 }

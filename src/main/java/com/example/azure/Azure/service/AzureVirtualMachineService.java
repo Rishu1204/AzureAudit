@@ -108,7 +108,7 @@ public class AzureVirtualMachineService {
                 CompletableFuture<List<AzureWebAppDto>> webApps =
                         supplyAsyncSafe(() -> fetchWebApps(azure), executor);
                 CompletableFuture<List<AzureCosmosDbDto>> cosmos =
-                        supplyAsyncSafe(() -> fetchCosmosDb(azure), executor);
+                        supplyAsyncSafe(() -> fetchCosmosDb(azure, subscriptionId), executor);
                 CompletableFuture<List<AzureRedisDto>> redis =
                         supplyAsyncSafe(() -> fetchRedis(azure), executor);
                 CompletableFuture<List<AzureEventHubDto>> eventHubs =
@@ -120,7 +120,7 @@ public class AzureVirtualMachineService {
                 CompletableFuture<List<AzureKubernetesDto>> aksCluster =
                         supplyAsyncSafe(() -> fetchAksClusters(azure), executor);
                 CompletableFuture<List<AzureContainerInstancesDto>> containerInstances =
-                        supplyAsyncSafe(() -> fetchContainerInstances(azure), executor);
+                        supplyAsyncSafe(() -> fetchContainerInstances(azure, subscriptionId), executor);
                 CompletableFuture<List<AzureAutoScaleDto>> autoScale =
                         supplyAsyncSafe(() -> fetchAutoScale(azure), executor);
                 CompletableFuture<List<AzureVmScaleSetDto>> vmScaleSet =
@@ -128,7 +128,7 @@ public class AzureVirtualMachineService {
                 CompletableFuture<List<AzureDnsZoneDto>> dnsZones =
                         supplyAsyncSafe(() -> fetchDnsZones(azure), executor);
                 CompletableFuture<List<AzureLoadBalancerDto>> loadBalancers =
-                        supplyAsyncSafe(() -> fetchLoadBalancers(azure, costAnalysis), executor);
+                        supplyAsyncSafe(() -> fetchLoadBalancers(azure, costAnalysis, subscriptionId), executor);
                 CompletableFuture<List<AzureSnapshotDto>> snapshots =
                         supplyAsyncSafe(() -> fetchSnapshots(azure, costAnalysis), executor);
                 CompletableFuture<List<AzurePostgreSqlDto>> postGreSqlServers =
@@ -146,7 +146,7 @@ public class AzureVirtualMachineService {
                 CompletableFuture<List<AzurePublicIpsDto>> publicIps =
                         supplyAsyncSafe(() -> fetchPublicIps(azure, costAnalysis), executor);
                 CompletableFuture<List<AzureNatGatewayDto>> natGateways =
-                        supplyAsyncSafe(() -> fetchNatGateways(azure, costAnalysis), executor);
+                        supplyAsyncSafe(() -> fetchNatGateways(azure, costAnalysis, subscriptionId), executor);
 
                 CompletableFuture.allOf(
                         vms, sql, networks, storage, disks,
@@ -580,7 +580,7 @@ public class AzureVirtualMachineService {
     }
 
 
-    private List<AzureCosmosDbDto> fetchCosmosDb(AzureResourceManager azure) {
+    private List<AzureCosmosDbDto> fetchCosmosDb(AzureResourceManager azure, String subscriptionId) {
         List<AzureCosmosDbDto> result = new ArrayList<>();
         log.info("Fetching Cosmos DB accounts...");
         azure.cosmosDBAccounts().list().forEach(account -> {
@@ -594,6 +594,8 @@ public class AzureVirtualMachineService {
                             ? account.kind().toString()
                             : null)
                     .enableAutomaticFailover(account.automaticFailoverEnabled())
+                    .avgDataUsageMb(fetchMetricDirect(subscriptionId, account.id(), "DataUsage", "Average", 15))
+                    .avgTotalRequests(fetchMetricDirect(subscriptionId, account.id(), "TotalRequests", "Total", 15))
                     .build();
 
             result.add(dto);
@@ -811,7 +813,7 @@ public class AzureVirtualMachineService {
         return result;
     }
 
-    private List<AzureContainerInstancesDto> fetchContainerInstances(AzureResourceManager azure) {
+    private List<AzureContainerInstancesDto> fetchContainerInstances(AzureResourceManager azure, String subscriptionId) {
         List<AzureContainerInstancesDto> result = new ArrayList<>();
         log.info("Fetching Container Instances...");
         azure.containerGroups().list().forEach(containerGroup -> {
@@ -830,6 +832,8 @@ public class AzureVirtualMachineService {
                     .containerCount(containerGroup.containers().size())
                     .restartPolicy(containerGroup.restartPolicy() != null ?
                             containerGroup.restartPolicy().toString() : null)
+                    .avgCpuUsage(fetchMetricDirect(subscriptionId, containerGroup.id(), "CpuUsage", "Average", 15))
+                    .avgMemoryUsageMb(fetchMetricDirect(subscriptionId, containerGroup.id(), "MemoryUsage", "Average", 15))
                     .build();
 
             result.add(dto);
@@ -897,7 +901,7 @@ public class AzureVirtualMachineService {
     }
 
     private List<AzureLoadBalancerDto> fetchLoadBalancers(AzureResourceManager azure,
-                                                          Map<String, Map<String, Object>> costExplorer) {
+                                                          Map<String, Map<String, Object>> costExplorer, String subscriptionId) {
         List<AzureLoadBalancerDto> result = new ArrayList<>();
         log.info("Fetching Load Balancers...");
         azure.loadBalancers().list().forEach(lb -> {
@@ -927,12 +931,81 @@ public class AzureVirtualMachineService {
                             .collect(Collectors.joining(",")))
                     .ruleCount(lb.loadBalancingRules() != null ? lb.loadBalancingRules().size() : 0)
                     .probeCount(lb.innerModel().probes().size())
+                    .totalDataTransferredGb(roundToFourDecimals(fetchMetricDirect(subscriptionId, lb.id(), "ByteCount", "Total", 15) / (1024 * 1024 * 1024)))
+                    .noOfPacketsTransferred(fetchMetricDirect(subscriptionId, lb.id(), "PacketCount", "Total", 15))
                     .cost(roundToFourDecimals(calculateCost(costExplorer, lb.name().toLowerCase())))
                     .build();
                     dto.setCostOptimization(String.join(",", costRecommendation.generateLoadBalancerCostRecommendations(dto)));
             result.add(dto);
         });
         return result;
+    }
+
+    public double fetchMetricDirect(String subscriptionId,
+                                    String resourceId,
+                                    String metricName,
+                                    String aggregation,
+                                    int days) {
+        TokenCredential credential = new ClientSecretCredentialBuilder()
+                .tenantId(azureConfig.getTenantId())
+                .clientId(azureConfig.getClientId())
+                .clientSecret(azureConfig.getClientSecret())
+                .build();
+
+        MonitorManager monitorManager = MonitorManager
+                .configure()
+                .authenticate(credential, buildProfile(subscriptionId));
+
+        OffsetDateTime endTime = OffsetDateTime.now(ZoneOffset.UTC);
+        OffsetDateTime startTime = endTime.minusDays(days);
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
+        String timespan = startTime.format(formatter) + "/" + endTime.format(formatter);
+
+        try {
+
+            Response<ResponseInner> response = monitorManager.serviceClient().getMetrics().listWithResponse(
+                    resourceId,
+                    timespan,
+                    Duration.ofDays(1),
+                    metricName,
+                    aggregation,
+                    null, null, null, null, null,
+                    Context.NONE
+            );
+
+            if (response.getValue() != null && response.getValue().value() != null && !response.getValue().value().isEmpty()) {
+                MetricInner metric = response.getValue().value().get(0);
+                double totalValue = 0;
+                int dataPointCount = 0;
+
+                for (TimeSeriesElement ts : metric.timeseries()) {
+                    if (ts.data() == null) continue;
+                    for (MetricValue val : ts.data()) {
+                        Double value = null;
+
+                        // Dynamically pick the field based on requested aggregation
+                        if ("Total".equalsIgnoreCase(aggregation)) value = val.total();
+                        else if ("Average".equalsIgnoreCase(aggregation)) value = val.average();
+                        else if ("Maximum".equalsIgnoreCase(aggregation)) value = val.maximum();
+
+                        if (value != null) {
+                            totalValue += value;
+                            dataPointCount++;
+                        }
+                    }
+                }
+
+                // 3. Return Logic: Average for percentages, Sum for counts
+                if (metricName.toLowerCase().contains("percent") && dataPointCount > 0) {
+                    return totalValue / dataPointCount;
+                }
+                return totalValue;
+            }
+        } catch (Exception e) {
+            log.error("Error fetching metric {} for resource {}: {}", metricName, resourceId, e.getMessage());
+        }
+
+        return 0.0;
     }
 
     private List<AzureSnapshotDto> fetchSnapshots(AzureResourceManager azure,
@@ -1251,7 +1324,7 @@ public class AzureVirtualMachineService {
     }
 
     private List<AzureNatGatewayDto> fetchNatGateways(AzureResourceManager azure,
-                                                      Map<String, Map<String, Object>> costExplorer) {
+                                                      Map<String, Map<String, Object>> costExplorer, String subscriptionId) {
 
         List<AzureNatGatewayDto> result = new ArrayList<>();
         log.info("Fetching NAT Gateways...");
@@ -1273,6 +1346,9 @@ public class AzureVirtualMachineService {
                             .publicIpIds(String.join(",", ipIds))
                             .subnetCount(Optional.of(subnetIds.size()).orElse(0))
                             .subnetIds(String.join(",", subnetIds))
+                            .totalDataTransferredGb(fetchMetricDirect(subscriptionId, natGateway.id(), "ByteCount", "Total", 15))
+                            .noOfPacketsTransferred(fetchMetricDirect(subscriptionId, natGateway.id(), "PacketCount", "Total", 15))
+                            .totalConnectionCount(fetchMetricDirect(subscriptionId, natGateway.id(), "TotalConnectionCount", "Total", 15))
                             .natGatewayCost(roundToFourDecimals(calculateCost(costExplorer, natGateway.name().toLowerCase())))
                             .build();
                     dto.setCostOptimization(String.join(",", costRecommendation.generateNatGatewayCostRecommendations(dto)));

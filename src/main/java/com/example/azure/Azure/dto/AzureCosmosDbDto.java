@@ -14,4 +14,6 @@ public class AzureCosmosDbDto {
     private String region;
     private String kind;
     private Boolean enableAutomaticFailover;
+    private double avgDataUsageMb;
+    private double avgTotalRequests;
 }

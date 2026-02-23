@@ -17,6 +17,9 @@ public class AzureNatGatewayDto {
     private Integer subnetCount;
     private String publicIpIds;
     private String subnetIds;
+    private double totalDataTransferredGb;
+    private double noOfPacketsTransferred;
+    private double totalConnectionCount;
     private Double natGatewayCost;
     private String costOptimization;
 }

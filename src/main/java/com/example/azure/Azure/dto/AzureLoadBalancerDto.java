@@ -22,6 +22,8 @@ public class AzureLoadBalancerDto {
     private String backendIds;
     private int ruleCount;
     private int probeCount;
+    private double totalDataTransferredGb;
+    private double noOfPacketsTransferred;
     private double cost;
     private String costOptimization;
 }
