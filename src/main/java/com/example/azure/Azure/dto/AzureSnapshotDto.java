@@ -10,7 +10,8 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AzureSnapshotDto {
-    private String name;
+    private String subscriptionId;
+    private String snapshotName;
     private String resourceGroup;
     private String region;
     private Integer diskSizeGb;
@@ -20,4 +21,6 @@ public class AzureSnapshotDto {
     private String timeCreated;
     private String sourceResourceId;
     private String provisioningState;
+    private Double cost;
+    private String costOptimization;
 }

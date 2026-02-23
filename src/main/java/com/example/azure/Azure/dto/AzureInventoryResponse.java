@@ -39,5 +39,6 @@ public class AzureInventoryResponse {
     private List<AzureWebPubSubDto> azureWebPubSubServices;
     private List<AzureServiceBusDto> azureServiceBus;
     private List<AzurePublicIpsDto> azurePublicIps;
+    private List<AzureNatGatewayDto> azureNatGateways;
 }
 

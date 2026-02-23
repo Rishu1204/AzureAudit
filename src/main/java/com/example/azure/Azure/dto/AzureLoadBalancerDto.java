@@ -10,12 +10,18 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AzureLoadBalancerDto {
-    private String name;
+    private String subscriptionId;
     private String resourceGroup;
     private String region;
+    private String loadBalancerName;
     private String sku;
     private int frontendIpCount;
+    private String frontEndIds;
+    private String privateIpAddresses;
     private int backendPoolCount;
+    private String backendIds;
     private int ruleCount;
     private int probeCount;
+    private double cost;
+    private String costOptimization;
 }

@@ -5,17 +5,15 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.math.BigDecimal;
-import java.util.List;
-
 @AllArgsConstructor
 @Data
 @Builder
 @NoArgsConstructor
 public class AzureVirtualMachineDto {
-    private String name;
+    private String subscriptionName;
     private String resourceGroup;
     private String region;
+    private String instanceName;
     private String size;
     private String osType;
     private String powerState;
@@ -29,6 +27,6 @@ public class AzureVirtualMachineDto {
     private double peakCpu;
     private double peakMemory;
     private double vmCost;
-    private List<String> costOptimization;
+    private String costOptimization;
 
 }

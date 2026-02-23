@@ -1,8 +1,10 @@
 package com.example.azure.Azure.dto;
 
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-import java.util.List;
 import java.util.Map;
 
 @AllArgsConstructor
@@ -11,10 +13,11 @@ import java.util.Map;
 @Builder
 public class AzureDiskDto {
 
-    private String name;
+    private String subscriptionId;
     private String resourceGroup;
     private String region;
-    private Integer sizeInGb;
+    private String diskName;
+    private int sizeInGb;
     private String sku;
     private String osType;
     private boolean isAttachedToVm;
@@ -26,5 +29,5 @@ public class AzureDiskDto {
     private Long diskMBpsReadOnly;
     private Long diskMBpsReadWrite;
     private double diskCost;
-    private List<String> costOptimization;
+    private String costOptimization;
 }

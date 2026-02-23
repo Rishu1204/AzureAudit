@@ -1,27 +1,28 @@
 package com.example.azure.Azure.dto;
 
-import lombok.*;
-
-import java.util.List;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 @AllArgsConstructor
 @NoArgsConstructor
 @Data
 @Builder
 public class AzureStorageAccountDto {
-
-    private String name;
+    private String subscriptionId;
     private String resourceGroup;
     private String region;
+    private String storageAccountName;
     private String provisioningState;
     private String sku;
     private String kind;
     private String accessTier;
     private String primaryStatus;
-    private List<String> blobContainers;
-    private List<String> queueNames;
+    private String blobContainers;
+    private String queueNames;
     private Double storageUsedGb;
     private double storageAccountCost;
-    private List<String> costOptimization;
+    private String costOptimization;
 
 }

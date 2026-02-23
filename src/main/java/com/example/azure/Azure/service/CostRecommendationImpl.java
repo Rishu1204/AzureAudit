@@ -4,6 +4,7 @@ import com.example.azure.Azure.dto.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -16,145 +17,121 @@ public class CostRecommendationImpl {
     public List<String> generateVmCostRecommendations(AzureVirtualMachineDto vm) {
 
         List<String> recommendations = new ArrayList<>();
-
         String powerState = vm.getPowerState() != null ? vm.getPowerState().toLowerCase() : "unknown";
+        double projectedMonthlyCost = projectFullMonthCost(vm.getVmCost());
+        double avgCpu = vm.getAvgCpu();
+        double peakCpu = vm.getPeakCpu();
 
         // ===============================
         // 1️⃣ STOPPED BUT STILL BILLED
         // ===============================
         if (powerState.contains("stopped")) {
-            recommendations.add(
-                    "VM '" + vm.getName() + "' is stopped but still allocated. "
-                            + "Compute charges may still apply. Consider deallocating "
-                            + "the VM to stop compute billing."
-            );
+            recommendations.add("Deallocate VM '" + vm.getInstanceName() + "' to save approximately $"
+                            + format(projectedMonthlyCost) + " per month.");
         }
 
         // ===============================
-        // 2️⃣ DEALLOCATED (Only Storage Cost)
+        // 2️⃣ DEALLOCATED
         // ===============================
         if (powerState.contains("deallocated")) {
-
-            recommendations.add(
-                    "VM '" + vm.getName() + "' is deallocated. Only storage charges apply. "
-                            + "If no longer required, consider deleting the VM and attached disks "
-                            + "to eliminate storage cost."
-            );
+            recommendations.add("VM '" + vm.getInstanceName() + "' is already deallocated. No compute cost savings available.");
         }
 
         // ===============================
-        // 3️⃣ RUNNING BUT IDLE
+        // 3️⃣ RUNNING BUT IDLE (<5% CPU)
         // ===============================
-        if (powerState.contains("running")
-                && vm.getAvgCpu() < 5) {
-
-            recommendations.add(
-                    "VM '" + vm.getName() + "' is running with very low CPU utilization ("
-                            + vm.getAvgCpu() + "%). Consider auto-shutdown schedules "
-                            + "or downsizing to reduce compute costs."
-            );
+        if (powerState.contains("running") && avgCpu < 5) {
+            double estimatedSavings = projectedMonthlyCost * 0.60;
+            recommendations.add("Downsize or schedule shutdown for VM '" + vm.getInstanceName() + "' to save approximately $"
+                            + format(estimatedSavings) + " per month.");
         }
 
         // ===============================
         // 4️⃣ UNDERUTILIZED
         // ===============================
-        if (powerState.contains("running")
-                && vm.getAvgCpu() < 10
-                && vm.getPeakCpu() < 30) {
-
-            recommendations.add(
-                    "VM '" + vm.getName() + "' is underutilized. "
-                            + "Evaluate resizing to a smaller SKU or burstable VM "
-                            + "to optimize cost."
-            );
+        if (powerState.contains("running") && avgCpu < 10 && peakCpu < 30) {
+            double estimatedSavings = projectedMonthlyCost * 0.40;
+            recommendations.add("Resize VM '" + vm.getInstanceName() + "' to a smaller SKU and save approximately $"
+                            + format(estimatedSavings) + " per month.");
         }
 
         // ===============================
         // 5️⃣ HIGH COST + LOW UTILIZATION
         // ===============================
-        if (powerState.contains("running")
-                && vm.getVmCost() > 300
-                && vm.getAvgCpu() < 20) {
-
-            recommendations.add(
-                    "VM '" + vm.getName() + "' has high monthly cost ($"
-                            + vm.getVmCost()
-                            + ") with low utilization. Consider rightsizing "
-                            + "or Reserved Instances for cost optimization."
-            );
+        if (powerState.contains("running") && projectedMonthlyCost > 300 && avgCpu < 20) {
+            double estimatedSavings = projectedMonthlyCost * 0.30;
+            recommendations.add("Optimize VM '" + vm.getInstanceName() + "' to reduce approximately $"
+                            + format(estimatedSavings) + " per month from current $" + format(projectedMonthlyCost)
+                            + " monthly spend.");
         }
-
-
         return recommendations;
     }
 
+    private double projectFullMonthCost(double monthToDateCost) {
+        if (monthToDateCost <= 0) {
+            return 0;
+        }
+        java.time.LocalDate today = java.time.LocalDate.now();
+        int currentDay = today.getDayOfMonth();
+        int totalDaysInMonth = java.time.YearMonth.from(today).lengthOfMonth();
+        if (currentDay == 0) {
+            return monthToDateCost;
+        }
+        //Today = 15th
+        //MTD cost = $150
+        //Month = 30 days
+        //(150 / 15) * 30 = $300
+
+        double projectedCost = (monthToDateCost / currentDay) * totalDaysInMonth;
+        return Math.round(projectedCost);
+    }
+
+    private String format(double value) {
+        return String.format("%.2f", value);
+    }
 
     public List<String> generateSqlCostRecommendations(AzureSqlServiceDto db) {
-
         List<String> recommendations = new ArrayList<>();
-
-        String status = db.getStatus() != null
-                ? db.getStatus().toLowerCase()
-                : "unknown";
-
-        String edition = db.getEdition() != null
-                ? db.getEdition().toLowerCase()
-                : "unknown";
-
-        double cost = Math.max(db.getDatabaseCost(), 0.0);
+        String status = db.getStatus() != null ? db.getStatus().toLowerCase() : "unknown";
+        String edition = db.getEdition() != null ? db.getEdition().toLowerCase() : "unknown";
+        String sku = db.getSku() != null ? db.getSku().toLowerCase() : "";
+        double cost = Math.max(projectFullMonthCost(db.getDatabaseCost()), 0.0);
 
         // ================================
         // 1️⃣ Paused / Offline Database
         // ================================
         if (status.contains("paused") || status.contains("offline")) {
+            recommendations.add("Delete SQL Database '" + db.getDatabaseName() + "' to save approximately $"
+                            + format(cost) + " per month.");
+        }
 
-            recommendations.add(
-                    "SQL Database '" + db.getDatabaseName()
-                            + "' is in " + db.getStatus()
-                            + " state. Storage charges may still apply. "
-                            + "If not required, consider deleting the database "
-                            + "to eliminate unnecessary costs."
+        // ================================
+        // 2️⃣ Business Critical Tier
+        // ================================
+        if (sku.contains("bc") || edition.contains("businesscritical")) {
+            double estimatedSavings = cost * 0.35; // approx BC → GP difference
+            recommendations.add("Downgrade SQL Database '" + db.getDatabaseName()
+                            + "' from Business Critical to General Purpose " + "to save approximately $"
+                            + format(estimatedSavings) + " per month.");
+        }
+
+        // ================================
+        // 3️⃣ Premium Tier
+        // ================================
+        if (edition.contains("premium")) {
+            double estimatedSavings = cost * 0.30;
+            recommendations.add("Resize Premium SQL Database '" + db.getDatabaseName()
+                            + "' to lower tier and save approximately $"+ format(estimatedSavings) + " per month."
             );
         }
 
         // ================================
-        // 2️⃣ High Monthly Cost
+        // 4️⃣ Standalone (Elastic Pool Opportunity)
         // ================================
-//        if (cost > 500) {
-//
-//            recommendations.add(
-//                    "SQL Database '" + db.getDatabaseName()
-//                            + "' has high monthly cost ($" + cost
-//                            + "). Review vCore/DTU utilization and consider "
-//                            + "rightsizing or purchasing Reserved Capacity."
-//            );
-//        }
-
-        // ================================
-        // 3️⃣ Premium / Business Critical Tier
-        // ================================
-        if (edition.contains("premium")
-                || edition.contains("businesscritical")) {
-
-            recommendations.add(
-                    "SQL Database '" + db.getDatabaseName()
-                            + "' is using high-tier SKU (" + db.getEdition()
-                            + "). Ensure workload requires high IOPS and HA. "
-                            + "Otherwise consider General Purpose tier for cost savings."
-            );
-        }
-
-        // ================================
-        // 4️⃣ Standalone Database
-        // ================================
-        if (db.getElasticPoolName() == null) {
-
-            recommendations.add(
-                    "SQL Database '" + db.getDatabaseName()
-                            + "' is deployed as standalone. "
-                            + "If workload is intermittent, evaluate Elastic Pool "
-                            + "to optimize compute cost."
-            );
+        if (db.getElasticPoolName() == null && cost > 100) {
+            double estimatedSavings = cost * 0.25;
+            recommendations.add("Move SQL Database '" + db.getDatabaseName() + "' to Elastic Pool to save approximately $"
+                            + format(estimatedSavings) + " per month.");
         }
 
         return recommendations;
@@ -165,28 +142,29 @@ public class CostRecommendationImpl {
         List<String> recommendations = new ArrayList<>();
 
         // =====================================
-        // 1️⃣ DDoS Protection Plan Cost Review
+        // 1️⃣ DDoS Protection Enabled
         // =====================================
         if (Boolean.TRUE.equals(vnet.isEnableDdosProtection())) {
 
             recommendations.add(
                     "Virtual Network '" + vnet.getNetworkName()
-                            + "' has DDoS Protection enabled. Azure DDoS Protection "
-                            + "incurs additional charges. Ensure this VNet hosts "
-                            + "internet-facing production workloads to justify the cost."
+                            + "' has DDoS Protection enabled. "
+                            + "Azure DDoS Protection Standard incurs additional charges. "
+                            + "Ensure this VNet supports internet-facing production workloads "
+                            + "to justify the cost."
             );
         }
 
         // =====================================
-        // 2️⃣ No Subnets Defined (Unused VNet)
+        // 2️⃣ No Subnets (Potentially Unused)
         // =====================================
-        if (vnet.getSubnets() == null || vnet.getSubnets().isEmpty()) {
+        if (vnet.getSubnets() == null || vnet.getSubnets().isBlank()) {
 
             recommendations.add(
                     "Virtual Network '" + vnet.getNetworkName()
                             + "' has no subnets configured. "
-                            + "If unused, consider removing the VNet to reduce "
-                            + "management overhead and associated dependent resource costs."
+                            + "If the VNet is not in use, consider removing it to reduce "
+                            + "management complexity and dependent resource costs."
             );
         }
 
@@ -197,9 +175,9 @@ public class CostRecommendationImpl {
 
             recommendations.add(
                     "Virtual Network '" + vnet.getNetworkName()
-                            + "' is using custom DNS servers. "
-                            + "Ensure associated DNS infrastructure cost is justified "
-                            + "and actively used."
+                            + "' is configured with custom DNS servers. "
+                            + "Verify associated DNS infrastructure costs and ensure "
+                            + "they are actively required."
             );
         }
 
@@ -211,8 +189,21 @@ public class CostRecommendationImpl {
             recommendations.add(
                     "Virtual Network '" + vnet.getNetworkName()
                             + "' has VM protection enabled. "
-                            + "Review if enhanced security configuration aligns "
-                            + "with workload criticality."
+                            + "Review security configuration to confirm it aligns "
+                            + "with workload requirements and cost considerations."
+            );
+        }
+
+        // =====================================
+        // 5️⃣ DDoS Plan Attached
+        // =====================================
+        if (vnet.getDdosProtectionPlanId() != null) {
+
+            recommendations.add(
+                    "Virtual Network '" + vnet.getNetworkName()
+                            + "' is associated with a DDoS Protection Plan. "
+                            + "Confirm the plan is required and shared effectively "
+                            + "across multiple VNets to optimize cost."
             );
         }
 
@@ -223,8 +214,8 @@ public class CostRecommendationImpl {
 
         List<String> recommendations = new ArrayList<>();
 
-        double cost = Math.max(storage.getStorageAccountCost(), 0.0);
-
+        double mtdCost = Math.max(storage.getStorageAccountCost(), 0.0);
+        double projectedCost = projectFullMonthCost(mtdCost);
 
         String sku = storage.getSku() != null
                 ? storage.getSku().toLowerCase()
@@ -234,113 +225,148 @@ public class CostRecommendationImpl {
                 ? storage.getAccessTier().toLowerCase()
                 : "";
 
-        String kind = storage.getKind() != null
-                ? storage.getKind().toLowerCase()
-                : "";
-
-        // =====================================
-        // 1️⃣ High Monthly Cost
-        // =====================================
-//        if (cost > 300) {
-//
-//            recommendations.add(
-//                    "Storage Account '" + storage.getName()
-//                            + "' has high monthly cost ($" + cost
-//                            + "). Review data growth, lifecycle policies, "
-//                            + "and replication configuration for optimization opportunities."
-//            );
-//        }
-
-        // =====================================
-        // 2️⃣ Premium SKU Review
-        // =====================================
-        if (sku.contains("premium")) {
-
-            recommendations.add(
-                    "Storage Account '" + storage.getName()
-                            + "' is using Premium SKU (" + storage.getSku()
-                            + "). Ensure workload requires high IOPS or low latency. "
-                            + "Otherwise consider Standard tier to reduce cost."
-            );
-        }
-
-        // =====================================
-        // 3️⃣ Hot Access Tier Optimization
-        // =====================================
-        if ("hot".equals(accessTier)) {
-
-            recommendations.add(
-                    "Storage Account '" + storage.getName()
-                            + "' is using Hot access tier. "
-                            + "If data is infrequently accessed, consider Cool or Archive tier "
-                            + "to reduce storage costs."
-            );
-        }
-
-        // =====================================
-        // 4️⃣ No Blob Containers and No Queues
-        // =====================================
         boolean noBlobs = storage.getBlobContainers() == null
                 || storage.getBlobContainers().isEmpty();
 
         boolean noQueues = storage.getQueueNames() == null
                 || storage.getQueueNames().isEmpty();
 
-        if (noBlobs && noQueues) {
+
+        // =====================================
+        // 1️⃣ Unused Storage Account
+        // =====================================
+        if (noBlobs && noQueues && mtdCost > 0) {
 
             recommendations.add(
-                    "Storage Account '" + storage.getName()
-                            + "' does not contain any blob containers or queues. "
-                            + "If unused, consider removing the account to eliminate "
-                            + "associated storage and management overhead costs."
+                    "Storage Account '" + storage.getStorageAccountName()
+                            + "' appears unused. Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". If not required, deleting the account could eliminate this cost."
             );
         }
 
         // =====================================
-        // 5️⃣ Legacy Storage Kind (v1)
+        // 2️⃣ Premium SKU Review
         // =====================================
-        if (kind.contains("storage")) {
+        if (sku.contains("premium") && mtdCost > 0) {
 
             recommendations.add(
-                    "Storage Account '" + storage.getName()
-                            + "' may be using legacy deployment model (" + storage.getKind()
-                            + "). Consider upgrading to StorageV2 for better cost "
-                            + "optimization features like lifecycle management."
+                    "Storage Account '" + storage.getStorageAccountName()
+                            + "' is using Premium SKU (" + storage.getSku()
+                            + "). Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". Ensure workload requires high performance. "
+                            + "Otherwise consider Standard tier for cost optimization."
             );
         }
 
+        // =====================================
+        // 3️⃣ Hot Tier Optimization
+        // =====================================
+        if ("hot".equals(accessTier) && mtdCost > 0) {
+
+            recommendations.add(
+                    "Storage Account '" + storage.getStorageAccountName()
+                            + "' is configured with Hot access tier. "
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". If data is infrequently accessed, consider Cool or Archive tier "
+                            + "to reduce storage cost."
+            );
+        }
+
+        // =====================================
+        // 4️⃣ Geo-Redundant Replication Review
+        // =====================================
+        if (sku.contains("grs") && mtdCost > 0) {
+
+            recommendations.add(
+                    "Storage Account '" + storage.getStorageAccountName()
+                            + "' is using geo-redundant replication ("
+                            + storage.getSku()
+                            + "). Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". Confirm cross-region redundancy is required. "
+                            + "If not, evaluate locally redundant storage (LRS) to optimize cost."
+            );
+        }
+
+        // =====================================
+        // 5️⃣ General Cost Awareness
+        // =====================================
+        if (mtdCost > 0) {
+
+            recommendations.add(
+                    "Storage Account '" + storage.getStorageAccountName()
+                            + "' has a projected monthly cost of approximately $"
+                            + projectedCost
+                            + ". Review lifecycle policies, access tiers, and replication settings "
+                            + "to ensure optimal cost efficiency."
+            );
+        }
         return recommendations;
     }
 
     public List<String> generateDiskCostRecommendations(AzureDiskDto disk) {
 
         List<String> recommendations = new ArrayList<>();
+        double mtdCost = Math.max(disk.getDiskCost(), 0.0);
+        double projectedCost = projectFullMonthCost(mtdCost);
 
-        double cost = Math.max(disk.getDiskCost(), 0.0);
         String sku = disk.getSku() != null ? disk.getSku().toLowerCase() : "";
         String diskState = disk.getDiskState() != null ? disk.getDiskState().toLowerCase() : "";
-
         Map<String, String> attachedVms =
                 disk.getAttachedVm() != null ? disk.getAttachedVm() : new HashMap<>();
 
-        // =====================================
-        // 1️⃣ Disk Completely Unattached
-        // =====================================
         boolean isUnattached =
                 diskState.contains("unattached") ||
                         attachedVms.isEmpty() ||
                         attachedVms.containsKey("Not Attached");
 
-        if (isUnattached) {
+
+        // =====================================
+        // 1️⃣ Unattached Disk
+        // =====================================
+        if (isUnattached && mtdCost > 0) {
 
             recommendations.add(
-                    "Disk '" + disk.getName() +
-                            "' is not attached to any VM and continues to incur storage charges. " +
-                            "If not required, consider deleting it to reduce cost."
+                    "Disk '" + disk.getDiskName()
+                            + "' is not attached to any virtual machine. "
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". If no longer required, deleting it could eliminate this cost."
             );
 
-            // If unattached, no need to evaluate VM states
             return recommendations;
+        }
+
+        // =====================================
+        // 2️⃣ Premium / Ultra Tier
+        // =====================================
+        if ((sku.contains("premium") || sku.contains("ultra")) && mtdCost > 0) {
+
+            recommendations.add(
+                    "Disk '" + disk.getDiskName()
+                            + "' is using high-performance tier (" + disk.getSku()
+                            + "). Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". Validate performance requirements and consider Standard SSD if appropriate."
+            );
+        }
+
+        // =====================================
+        // 3️⃣ Large Disk
+        // =====================================
+        if (disk.getDiskSizeGb() != null && disk.getDiskSizeGb() > 512 && mtdCost > 0) {
+
+            recommendations.add(
+                    "Disk '" + disk.getDiskName()
+                            + "' is provisioned with "
+                            + disk.getDiskSizeGb()
+                            + " GB. Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". Review utilization and resize if over-provisioned."
+            );
         }
 
         // =====================================
@@ -348,38 +374,52 @@ public class CostRecommendationImpl {
         // =====================================
         attachedVms.forEach((vmName, vmState) -> {
 
-            if (vmState != null &&
-                    vmState.toLowerCase().contains("stopped")) {
+            if (vmState != null && vmState.toLowerCase().contains("stopped")) {
 
                 recommendations.add(
-                        "Disk '" + disk.getName() +
-                                "' is attached to stopped VM '" + vmName +
-                                "'. Storage charges continue even when VM is stopped."
+                        "Disk '" + disk.getDiskName()
+                                + "' is attached to stopped VM '" + vmName
+                                + "'. Storage charges continue regardless of VM power state."
                 );
             }
         });
 
         // =====================================
-        // 3️⃣ High Monthly Cost
-//        // =====================================
-//        if (cost > 150) {
-//
-//            recommendations.add(
-//                    "Disk '" + disk.getName() +
-//                            "' has relatively high monthly cost ($" + cost +
-//                            "). Review disk size and tier for optimization."
-//            );
-//        }
-
-        // =====================================
-        // 4️⃣ Premium / Ultra Tier Review
+        // 3️⃣ Premium / Ultra Tier Review
         // =====================================
         if (sku.contains("premium") || sku.contains("ultra")) {
 
             recommendations.add(
-                    "Disk '" + disk.getName() +
-                            "' is using high-performance tier (" + disk.getSku() +
-                            "). Validate workload requires this performance level."
+                    "Disk '" + disk.getDiskName()
+                            + "' is provisioned with high-performance tier ("
+                            + disk.getSku()
+                            + "). Ensure workload requires this performance level. "
+                            + "If not, evaluate Standard SSD for cost optimization."
+            );
+        }
+
+        // =====================================
+        // 4️⃣ Large Provisioned Size Review
+        // =====================================
+        if (disk.getDiskSizeGb() != null && disk.getDiskSizeGb() > 512) {
+
+            recommendations.add(
+                    "Disk '" + disk.getDiskName()
+                            + "' is provisioned with large capacity ("
+                            + disk.getDiskSizeGb() + " GB). "
+                            + "Review actual utilization and consider resizing if over-provisioned."
+            );
+        }
+
+        // =====================================
+        // 5️⃣ Standard HDD Tier Review
+        // =====================================
+        if (sku.contains("standard") && sku.contains("hdd")) {
+
+            recommendations.add(
+                    "Disk '" + disk.getDiskName()
+                            + "' is using Standard HDD tier. "
+                            + "If performance-sensitive workload exists, confirm appropriate tier selection."
             );
         }
 
@@ -391,8 +431,8 @@ public class CostRecommendationImpl {
 
         List<String> recommendations = new ArrayList<>();
 
-        double cost = Math.max(ip.getPublicIpCost(), 0.0);
-
+        double mtdCost = Math.max(ip.getPublicIpCost(), 0.0);
+        double projectedCost = projectFullMonthCost(mtdCost);
 
         String allocationMethod = ip.getAllocationMethod() != null
                 ? ip.getAllocationMethod().toLowerCase()
@@ -403,65 +443,297 @@ public class CostRecommendationImpl {
                 : "";
 
         // =====================================
-        // 1️⃣ Unused Public IP (Major Waste)
+        // 1️⃣ Unused Public IP (Full Saving Possible)
         // =====================================
-        if (ip.getIpAddress() == null || ip.getIpAddress().isEmpty()) {
+        if ((ip.getIpAddress() == null || ip.getIpAddress().isEmpty()) && mtdCost > 0) {
 
             recommendations.add(
-                    "Public IP '" + ip.getName()
+                    "Public IP '" + ip.getIpName()
                             + "' does not appear to be associated with an active resource. "
-                            + "Unattached Public IPs continue to incur charges. "
-                            + "Consider removing if not required."
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". If not required, deleting it could eliminate this cost."
             );
         }
 
         // =====================================
-        // 2️⃣ High Cost Public IP
+        // 2️⃣ Static Allocation Cost Review
         // =====================================
-        if (cost > 20) {
+        if ("static".equals(allocationMethod) && mtdCost > 0) {
 
             recommendations.add(
-                    "Public IP '" + ip.getName()
-                            + "' has elevated monthly cost ($" + cost
-                            + "). Review SKU type and usage necessity."
-            );
-        }
-
-        // =====================================
-        // 3️⃣ Static Allocation Review
-        // =====================================
-        if ("static".equals(allocationMethod)) {
-
-            recommendations.add(
-                    "Public IP '" + ip.getName()
+                    "Public IP '" + ip.getIpName()
                             + "' is configured with Static allocation. "
-                            + "If static addressing is not required, consider "
-                            + "Dynamic allocation to optimize cost."
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". If static addressing is not required, "
+                            + "consider Dynamic allocation to optimize cost."
             );
         }
 
         // =====================================
-        // 4️⃣ Standard SKU Review
+        // 3️⃣ Standard SKU Review
         // =====================================
-        if (skuType.contains("standard")) {
+        if (skuType.contains("standard") && mtdCost > 0) {
 
             recommendations.add(
-                    "Public IP '" + ip.getName()
-                            + "' is using Standard SKU. Ensure advanced features "
-                            + "such as zone redundancy or enhanced security are required "
-                            + "to justify higher cost compared to Basic SKU."
+                    "Public IP '" + ip.getIpName()
+                            + "' is using Standard SKU. "
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". Ensure advanced networking features are required "
+                            + "to justify the higher cost compared to Basic SKU."
             );
         }
 
         // =====================================
-        // 5️⃣ IPv6 Review
+        // 4️⃣ IPv6 Review
         // =====================================
-        if ("ipv6".equalsIgnoreCase(ip.getPublicIpAddressVersion())) {
+        if ("ipv6".equalsIgnoreCase(ip.getPublicIpAddressVersion()) && mtdCost > 0) {
 
             recommendations.add(
-                    "Public IP '" + ip.getName()
-                            + "' is IPv6. Confirm IPv6 traffic requirement "
-                            + "to ensure cost alignment."
+                    "Public IP '" + ip.getIpName()
+                            + "' is configured as IPv6. "
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". Confirm IPv6 traffic requirement to ensure cost alignment."
+            );
+        }
+
+        // =====================================
+        // 5️⃣ General Cost Awareness
+        // =====================================
+        if (mtdCost > 0) {
+
+            recommendations.add(
+                    "Public IP '" + ip.getIpName()
+                            + "' has a projected monthly cost of approximately $"
+                            + projectedCost
+                            + ". Review allocation method and SKU to ensure optimal cost efficiency."
+            );
+        }
+
+        return recommendations;
+    }
+
+    public List<String> generateNatGatewayCostRecommendations(AzureNatGatewayDto nat) {
+
+        List<String> recommendations = new ArrayList<>();
+
+        double mtdCost = Math.max(nat.getNatGatewayCost(), 0.0);
+        double projectedCost = projectFullMonthCost(mtdCost);
+
+        boolean noSubnets = nat.getSubnetCount() == 0;
+        boolean noPublicIps = nat.getPublicIpCount() == 0;
+
+        // =====================================
+        // 1️⃣ Unassociated NAT Gateway (Major Waste)
+        // =====================================
+        if ((noSubnets || noPublicIps) && mtdCost > 0) {
+
+            recommendations.add(
+                    "NAT Gateway '" + nat.getNatName()
+                            + "' is not fully associated with active subnets or public IPs. "
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". If unused, removing it could eliminate this cost."
+            );
+        }
+
+        // =====================================
+        // 2️⃣ No Subnet Attached
+        // =====================================
+        if (noSubnets && mtdCost > 0) {
+
+            recommendations.add(
+                    "NAT Gateway '" + nat.getNatName()
+                            + "' is not attached to any subnet. "
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". NAT Gateway incurs charges even when not routing traffic."
+            );
+        }
+
+        // =====================================
+        // 3️⃣ Multiple Public IPs Review
+        // =====================================
+        if (nat.getPublicIpCount() > 1 && mtdCost > 0) {
+
+            recommendations.add(
+                    "NAT Gateway '" + nat.getNatName()
+                            + "' is associated with "
+                            + nat.getPublicIpCount()
+                            + " public IP addresses. "
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". Ensure multiple outbound IPs are required."
+            );
+        }
+
+        // =====================================
+        // 4️⃣ Idle Timeout Review
+        // =====================================
+        if (nat.getIdleTimeoutInMinutes() != null
+                && nat.getIdleTimeoutInMinutes() > 10
+                && mtdCost > 0) {
+
+            recommendations.add(
+                    "NAT Gateway '" + nat.getNatName()
+                            + "' has idle timeout configured to "
+                            + nat.getIdleTimeoutInMinutes()
+                            + " minutes. "
+                            + "Projected monthly cost is approximately $"
+                            + projectedCost
+                            + ". Review configuration to ensure alignment with workload needs."
+            );
+        }
+
+        // =====================================
+        // 5️⃣ General Cost Awareness
+        // =====================================
+        if (mtdCost > 0) {
+
+            recommendations.add(
+                    "NAT Gateway '" + nat.getNatName()
+                            + "' has a projected monthly cost of approximately $"
+                            + projectedCost
+                            + ". Review subnet associations and public IP configuration "
+                            + "to ensure optimal cost efficiency."
+            );
+        }
+
+        return recommendations;
+    }
+
+    public List<String> generateSnapshotCostRecommendations(AzureSnapshotDto snapshot) {
+
+        List<String> recommendations = new ArrayList<>();
+
+        double cost = Math.max(snapshot.getCost(), 0.0);
+        String sku = snapshot.getSku() != null ? snapshot.getSku().toLowerCase() : "";
+        int sizeGb = snapshot.getDiskSizeGb() != null ? snapshot.getDiskSizeGb() : 0;
+
+        // Parse creation time
+        OffsetDateTime creationTime = null;
+        if (snapshot.getTimeCreated() != null && !snapshot.getTimeCreated().isEmpty()) {
+            creationTime = OffsetDateTime.parse(snapshot.getTimeCreated());
+        }
+
+        // =====================================
+        // 1️⃣ Old Snapshot (older than 90 days)
+        // =====================================
+        if (creationTime != null) {
+            OffsetDateTime ninetyDaysAgo = OffsetDateTime.now().minusDays(90);
+            if (creationTime.isBefore(ninetyDaysAgo)) {
+                recommendations.add(
+                        "Snapshot '" + snapshot.getSnapshotName() + "' was created on " + creationTime.toLocalDate() +
+                                " and is older than 90 days. Consider deleting old snapshots to save storage cost."
+                );
+            }
+        }
+
+        // =====================================
+        // 2️⃣ Unused Snapshot
+        // =====================================
+        if (sizeGb > 0 && cost > 0) {
+            recommendations.add(
+                    "Snapshot '" + snapshot.getSnapshotName() + "' is taking up " + sizeGb + " GB and has incurred $" + cost
+                            + " in projected month-to-date charges. "
+                            + "If it is no longer required, consider deleting it to save storage cost."
+            );
+        }
+
+        // =====================================
+        // 3️⃣ Premium / High Performance SKU
+        // =====================================
+        if (sku.contains("premium") && cost > 0) {
+            recommendations.add(
+                    "Snapshot '" + snapshot.getSnapshotName() + "' is using a Premium SKU (" + snapshot.getSku()
+                            + ") with projected cost of $" + cost + ". "
+                            + "Ensure high performance is required; otherwise, consider Standard tier for cost savings."
+            );
+        }
+
+        // =====================================
+        // 4️⃣ Large Snapshot Size
+        // =====================================
+        if (sizeGb > 512 && cost > 0) {
+            recommendations.add(
+                    "Snapshot '" + snapshot.getSnapshotName() + "' is large (" + sizeGb + " GB) with projected cost of $" + cost + ". "
+                            + "Review if this size is necessary; resizing or deleting unnecessary snapshots can reduce cost."
+            );
+        }
+
+        // =====================================
+        // 5️⃣ General Cost Awareness
+        // =====================================
+        if (cost > 0) {
+            recommendations.add(
+                    "Snapshot '" + snapshot.getSnapshotName() + "' has projected cost of $" + cost + ". "
+                            + "Consider reviewing lifecycle management and retention policies to optimize cost."
+            );
+        }
+
+        return recommendations;
+    }
+
+    public List<String> generateLoadBalancerCostRecommendations(AzureLoadBalancerDto lb) {
+
+        List<String> recommendations = new ArrayList<>();
+
+        double cost = Math.max(lb.getCost(), 0.0);
+        String sku = lb.getSku() != null ? lb.getSku().toLowerCase() : "";
+        int frontendCount = lb.getFrontendIpCount();
+        int backendCount = lb.getBackendPoolCount();
+        int ruleCount = lb.getRuleCount();
+
+        // =====================================
+        // 1️⃣ High Cost Load Balancer
+        // =====================================
+        if (cost > 50) {
+            recommendations.add(
+                    "Load Balancer '" + lb.getLoadBalancerName() + "' has a projected cost of $" + cost + ". "
+                            + "Review usage, SKU selection, and associated resources to optimize cost."
+            );
+        }
+
+        // =====================================
+        // 2️⃣ Premium SKU Review
+        // =====================================
+        if (sku.contains("standard") || sku.contains("premium")) {
+            recommendations.add(
+                    "Load Balancer '" + lb.getLoadBalancerName() + "' is using SKU (" + lb.getSku() + "). "
+                            + "Ensure advanced features like zone redundancy or high availability are required to justify cost."
+            );
+        }
+
+        // =====================================
+        // 3️⃣ Unused Frontend / Backend Resources
+        // =====================================
+        if (frontendCount == 0 && backendCount == 0 && cost > 0) {
+            recommendations.add(
+                    "Load Balancer '" + lb.getLoadBalancerName() + "' has no frontends or backend pools but has incurred $" + cost
+                            + " in projected cost. Consider deleting unused load balancer to save cost."
+            );
+        }
+
+        // =====================================
+        // 4️⃣ Many Rules / Probes
+        // =====================================
+        if (ruleCount > 10 && cost > 0) {
+            recommendations.add(
+                    "Load Balancer '" + lb.getLoadBalancerName() + "' has " + ruleCount + " rules configured. "
+                            + "Evaluate if all rules are required; reducing unnecessary rules can optimize cost."
+            );
+        }
+
+        // =====================================
+        // 5️⃣ General Cost Awareness
+        // =====================================
+        if (cost > 0) {
+            recommendations.add(
+                    "Load Balancer '" + lb.getLoadBalancerName() + "' has projected cost of $" + cost + ". "
+                            + "Review frontend/backends, SKU, and usage patterns to ensure cost efficiency."
             );
         }
 

@@ -1,16 +1,19 @@
 package com.example.azure.Azure.service;
 
 import com.azure.core.credential.TokenCredential;
-import com.azure.core.http.rest.PagedIterable;
 import com.azure.core.http.rest.Response;
 import com.azure.core.management.AzureEnvironment;
+import com.azure.core.management.SubResource;
 import com.azure.core.management.profile.AzureProfile;
 import com.azure.core.util.Context;
+import com.azure.core.util.ExpandableStringEnum;
 import com.azure.identity.ClientSecretCredentialBuilder;
 import com.azure.resourcemanager.AzureResourceManager;
 import com.azure.resourcemanager.apimanagement.ApiManagementManager;
-import com.azure.resourcemanager.compute.models.Disk;
-import com.azure.resourcemanager.compute.models.VirtualMachine;
+import com.azure.resourcemanager.compute.fluent.models.DiskInner;
+import com.azure.resourcemanager.compute.fluent.models.SnapshotInner;
+import com.azure.resourcemanager.compute.fluent.models.VirtualMachineInner;
+import com.azure.resourcemanager.compute.models.*;
 import com.azure.resourcemanager.containerservice.models.KubernetesClusterAgentPool;
 import com.azure.resourcemanager.loganalytics.LogAnalyticsManager;
 import com.azure.resourcemanager.managementgroups.ManagementGroupsManager;
@@ -19,12 +22,26 @@ import com.azure.resourcemanager.monitor.fluent.models.MetricInner;
 import com.azure.resourcemanager.monitor.fluent.models.ResponseInner;
 import com.azure.resourcemanager.monitor.models.MetricValue;
 import com.azure.resourcemanager.monitor.models.TimeSeriesElement;
+import com.azure.resourcemanager.network.fluent.models.BackendAddressPoolInner;
+import com.azure.resourcemanager.network.fluent.models.FrontendIpConfigurationInner;
+import com.azure.resourcemanager.network.fluent.models.PublicIpAddressInner;
+import com.azure.resourcemanager.network.fluent.models.VirtualNetworkInner;
+import com.azure.resourcemanager.network.models.LoadBalancerSku;
+import com.azure.resourcemanager.network.models.LoadBalancerSkuType;
 import com.azure.resourcemanager.postgresql.PostgreSqlManager;
+import com.azure.resourcemanager.resources.models.Subscription;
 import com.azure.resourcemanager.servicebus.models.Queue;
 import com.azure.resourcemanager.servicebus.models.ServiceBusNamespace;
 import com.azure.resourcemanager.servicebus.models.Topic;
+import com.azure.resourcemanager.sql.fluent.models.DatabaseInner;
+import com.azure.resourcemanager.sql.models.Sku;
 import com.azure.resourcemanager.sql.models.SqlDatabase;
+import com.azure.resourcemanager.sql.models.SqlDatabaseThreatDetectionPolicy;
 import com.azure.resourcemanager.sql.models.SqlServer;
+import com.azure.resourcemanager.storage.fluent.models.StorageAccountInner;
+import com.azure.resourcemanager.storage.models.AccessTier;
+import com.azure.resourcemanager.storage.models.AccountStatuses;
+import com.azure.resourcemanager.storage.models.StorageAccountSkuType;
 import com.azure.resourcemanager.synapse.SynapseManager;
 import com.azure.resourcemanager.webpubsub.WebPubSubManager;
 import com.azure.storage.blob.BlobServiceClient;
@@ -35,6 +52,7 @@ import com.example.azure.Azure.config.AzureProperties;
 import com.example.azure.Azure.dto.*;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.logging.log4j.util.Strings;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -54,6 +72,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 
 @Service
@@ -77,7 +96,7 @@ public class AzureVirtualMachineService {
                 CompletableFuture<List<AzureVirtualMachineDto>> vms =
                         supplyAsyncSafe(() -> fetchVirtualMachines(azure, costAnalysis, subscriptionId), executor);
                 CompletableFuture<List<AzureSqlServiceDto>> sql =
-                        supplyAsyncSafe(() -> fetchSqlDatabases(azure, costAnalysis), executor);
+                        supplyAsyncSafe(() -> fetchSqlDatabases(azure, costAnalysis, subscriptionId), executor);
                 CompletableFuture<List<AzureVirtualNetworksDto>> networks =
                         supplyAsyncSafe(() -> fetchNetworks(azure), executor);
                 CompletableFuture<List<AzureStorageAccountDto>> storage =
@@ -109,9 +128,9 @@ public class AzureVirtualMachineService {
                 CompletableFuture<List<AzureDnsZoneDto>> dnsZones =
                         supplyAsyncSafe(() -> fetchDnsZones(azure), executor);
                 CompletableFuture<List<AzureLoadBalancerDto>> loadBalancers =
-                        supplyAsyncSafe(() -> fetchLoadBalancers(azure), executor);
+                        supplyAsyncSafe(() -> fetchLoadBalancers(azure, costAnalysis), executor);
                 CompletableFuture<List<AzureSnapshotDto>> snapshots =
-                        supplyAsyncSafe(() -> fetchSnapshots(azure), executor);
+                        supplyAsyncSafe(() -> fetchSnapshots(azure, costAnalysis), executor);
                 CompletableFuture<List<AzurePostgreSqlDto>> postGreSqlServers =
                         supplyAsyncSafe(() -> fetchPostGreSqlServers(subscriptionId), executor);
                 CompletableFuture<List<AzureLogAnalyticsWorkspaceDto>> logAnalyticsWorkspaces =
@@ -126,6 +145,8 @@ public class AzureVirtualMachineService {
                         supplyAsyncSafe(() -> fetchServiceBusNamespaces(azure), executor);
                 CompletableFuture<List<AzurePublicIpsDto>> publicIps =
                         supplyAsyncSafe(() -> fetchPublicIps(azure, costAnalysis), executor);
+                CompletableFuture<List<AzureNatGatewayDto>> natGateways =
+                        supplyAsyncSafe(() -> fetchNatGateways(azure, costAnalysis), executor);
 
                 CompletableFuture.allOf(
                         vms, sql, networks, storage, disks,
@@ -133,7 +154,7 @@ public class AzureVirtualMachineService {
                         eventHubs, acr, cdn, aksCluster, containerInstances,
                         autoScale, vmScaleSet, dnsZones, loadBalancers, snapshots,
                         postGreSqlServers, logAnalyticsWorkspaces, synapseWorkspaces,
-                        apiManagementService, webPubSubServices, serviceBus, publicIps
+                        apiManagementService, webPubSubServices, serviceBus, publicIps, natGateways
                 ).join();
                 responses.add(
                         AzureInventoryResponse.builder()
@@ -163,6 +184,7 @@ public class AzureVirtualMachineService {
                                 .azureWebPubSubServices(webPubSubServices.get())
                                 .azureServiceBus(serviceBus.get())
                                 .azurePublicIps(publicIps.get())
+                                .azureNatGateways(natGateways.get())
                                 .build());
             } catch (Exception e) {
                 log.error("Failed to build Azure inventory", e);
@@ -197,28 +219,31 @@ public class AzureVirtualMachineService {
         azure.virtualMachines().list().forEach(vm -> {
             log.info("Processing VM: {} in resource group: {}", vm.name(), vm.resourceGroupName());
             AzureVirtualMachineDto dto = AzureVirtualMachineDto.builder()
-                    .name(vm.name())
-                    .resourceGroup(vm.resourceGroupName())
-                    .region(vm.regionName())
-                    .size(vm.size() != null ? vm.size().getValue() : null)
-                    .osType(vm.osType() != null ? vm.osType().toString() : null)
-                    .powerState(vm.powerState() != null
-                            ? extractLastSegment(vm.powerState().getValue())
-                            : "Unknown")
-                    .networkInterfaces(extractList(vm.networkInterfaceIds()))
-                    .priority(vm.innerModel().priority().getValue())
-                    .publicIpAddress(extractLastSegment(vm.getPrimaryPublicIPAddressId()))
-                    .type(extractLastSegment(vm.innerModel().type()))
+                    .subscriptionName(Optional.ofNullable(azure.getCurrentSubscription().displayName()).orElse(Strings.EMPTY))
+                    .instanceName(Optional.ofNullable(vm.name()).orElse(Strings.EMPTY))
+                    .resourceGroup(Optional.ofNullable(vm.resourceGroupName()).orElse(Strings.EMPTY))
+                    .region(Optional.ofNullable(vm.regionName()).orElse(Strings.EMPTY))
+                    .size(Optional.ofNullable(vm.size()).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
+                    .osType(Optional.ofNullable(vm.osType()).map(OperatingSystemTypes::toString).orElse(Strings.EMPTY))
+                    .powerState(Optional.ofNullable(vm.powerState()).map(ExpandableStringEnum::getValue).map(this::extractLastSegment).orElse(Strings.EMPTY))
+                    .networkInterfaces(Optional.ofNullable(extractList(vm.networkInterfaceIds())).orElse(Strings.EMPTY))
+                    .priority(Optional.ofNullable(vm.innerModel()).map(VirtualMachineInner::priority).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
+                    .publicIpAddress(Optional.of(extractLastSegment(vm.getPrimaryPublicIPAddressId())).orElse(Strings.EMPTY))
+                    .type(Optional.ofNullable(vm.innerModel()).map(VirtualMachineInner::type).map(this::extractLastSegment).orElse(Strings.EMPTY))
                     .avgCpu(calculateMetric(vm.id(), "Percentage CPU", "Average", 7, false, subscriptionId))
                     .peakCpu(calculateMetric(vm.id(), "Percentage CPU", "Maximum", 7, false, subscriptionId))
                     .avgMemory(calculateMetric(vm.id(), "Available Memory Bytes", "Average", 7, true, subscriptionId))
                     .peakMemory(calculateMetric(vm.id(), "Available Memory Bytes", "Maximum", 7, true, subscriptionId))
-                    .vmCost(calculateCost(costExplorer, vm.innerModel().name().toLowerCase()))
+                    .vmCost(roundToFourDecimals(calculateCost(costExplorer, vm.innerModel().name().toLowerCase())))
                     .build();
-            dto.setCostOptimization(costRecommendation.generateVmCostRecommendations(dto));
+            dto.setCostOptimization(String.join(",", costRecommendation.generateVmCostRecommendations(dto)));
             result.add(dto);
         });
         return result;
+    }
+
+    private double roundToFourDecimals(double value) {
+        return Math.round(value * 10000.0) / 10000.0;
     }
 
     private double calculateMetric(String resourceId, String metricName, String aggregationType,
@@ -295,7 +320,8 @@ public class AzureVirtualMachineService {
                 .map(item -> {
                     log.info("Extracting last segment from: {}", item);
                     return extractLastSegment(item);
-                }).toList().toString();
+                })
+                .collect(java.util.stream.Collectors.joining(","));
     }
 
     private double calculateCost(Map<String, Map<String, Object>> costExplorer, String referenceName) {
@@ -332,27 +358,23 @@ public class AzureVirtualMachineService {
         azure.networks().list().forEach(network -> {
             log.info("Processing network: {} in resource group: {}", network.name(), network.resourceGroupName());
             AzureVirtualNetworksDto dto = AzureVirtualNetworksDto.builder()
-                    .networkName(network.name())
-                    .resourceGroupName(network.resourceGroupName())
-                    .region(network.regionName())
-                    .addressSpace(network.addressSpaces() != null
-                            ? String.join(",", network.addressSpaces())
-                            : null)
-                    .subnets(network.subnets() != null
-                            ? String.join(",", network.subnets().keySet())
-                            : null)
-                    .regionalCommunity(network.regionName())
+                    .subscriptionId(Optional.ofNullable(azure.getCurrentSubscription()).map(Subscription::displayName).orElse(Strings.EMPTY))
+                    .networkName(Optional.ofNullable(network.name()).orElse(Strings.EMPTY))
+                    .resourceGroupName(Optional.ofNullable(network.resourceGroupName()).orElse(Strings.EMPTY))
+                    .region(Optional.ofNullable(network.regionName()).orElse(Strings.EMPTY))
+                    .addressSpace(network.addressSpaces() != null ? String.join(",", network.addressSpaces()) : Strings.EMPTY)
+                    .subnets(network.subnets() != null ? String.join(",", network.subnets().keySet()) : Strings.EMPTY)
+                    .regionalCommunity(Optional.ofNullable(network.regionName()).orElse(Strings.EMPTY))
                     .enableDdosProtection(network.isDdosProtectionEnabled())
-                    .ddosProtectionPlanId(network.ddosProtectionPlanId())
+                    .ddosProtectionPlanId(Optional.ofNullable(network.ddosProtectionPlanId()).orElse(Strings.EMPTY))
                     .dhcpOptions(network.innerModel().dhcpOptions() != null
-                            ? String.join(",", network.innerModel().dhcpOptions().dnsServers())
-                            : null)
-                    .dnsServerIps(network.dnsServerIPs())
+                            ? String.join(",", network.innerModel().dhcpOptions().dnsServers()) : Strings.EMPTY)
+                    .dnsServerIps(String.join(",", network.dnsServerIPs()))
                     .enableVmProtection(network.isVmProtectionEnabled())
-                    .eTag(network.innerModel().etag())
-                    .resourceGuid(network.innerModel().resourceGuid())
+                    .eTag(Optional.ofNullable(network.innerModel()).map(VirtualNetworkInner::etag).orElse(Strings.EMPTY))
+                    .resourceGuid(Optional.ofNullable(network.innerModel()).map(VirtualNetworkInner::resourceGuid).orElse(Strings.EMPTY))
                     .build();
-            dto.setCostOptimization(costRecommendation.generateVnetCostRecommendations(dto));
+            dto.setCostOptimization(String.join(",", costRecommendation.generateVnetCostRecommendations(dto)));
             result.add(dto);
         });
         return result;
@@ -381,7 +403,6 @@ public class AzureVirtualMachineService {
                                 .endpoint("https://" + storage.name() + ".queue.core.windows.net")
                                 .credential(buildCredentials())
                                 .buildClient();
-
                 queueServiceClient.listQueues().forEach(queue -> queueNames.add(queue.getName()));
                 log.info("Fetched {} queues for storage account: {}", queueNames.size(), storage.name());
             } catch (Exception ex) {
@@ -389,20 +410,21 @@ public class AzureVirtualMachineService {
                         storage.name(), ex);
             }
             AzureStorageAccountDto dto = AzureStorageAccountDto.builder()
-                    .name(storage.name())
-                    .resourceGroup(storage.resourceGroupName())
-                    .region(storage.regionName())
-                    .provisioningState(storage.innerModel().provisioningState().name())
-                    .sku(storage.skuType() != null ? storage.skuType().name().getValue() : null)
-                    .kind(storage.kind() != null ? storage.kind().toString() : null)
-                    .accessTier(storage.accessTier() != null ? storage.accessTier().toString() : null)
-                    .primaryStatus(storage.accountStatuses().primary().name())
-                    .blobContainers(containerNames)
-                    .queueNames(queueNames)
+                    .subscriptionId(Optional.ofNullable(azure.getCurrentSubscription()).map(Subscription::displayName).orElse(Strings.EMPTY))
+                    .storageAccountName(Optional.ofNullable(storage.name()).orElse(Strings.EMPTY))
+                    .resourceGroup(Optional.ofNullable(storage.resourceGroupName()).orElse(Strings.EMPTY))
+                    .region(Optional.ofNullable(storage.regionName()).orElse(Strings.EMPTY))
+                    .provisioningState(Optional.ofNullable(storage.innerModel()).map(StorageAccountInner::provisioningState).map(Enum::name).orElse(Strings.EMPTY))
+                    .sku(Optional.ofNullable(storage.skuType()).map(StorageAccountSkuType::name).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
+                    .kind(Optional.ofNullable(storage.kind()).map(Objects::toString).orElse(Strings.EMPTY))
+                    .accessTier(Optional.ofNullable(storage.accessTier()).map(AccessTier::toString).orElse(Strings.EMPTY))
+                    .primaryStatus(Optional.ofNullable(storage.accountStatuses()).map(AccountStatuses::primary).map(Enum::name).orElse(Strings.EMPTY))
+                    .blobContainers(String.join("," , containerNames))
+                    .queueNames(String.join(",", queueNames))
                     .storageUsedGb(getStorageUsedInGB(subscriptionId, storage.id(), 15))
-                    .storageAccountCost(calculateCost(costExplorer, storage.innerModel().name().toLowerCase()))
+                    .storageAccountCost(roundToFourDecimals(calculateCost(costExplorer, storage.innerModel().name().toLowerCase())))
                     .build();
-            dto.setCostOptimization(costRecommendation.generateStorageCostRecommendations(dto));
+            dto.setCostOptimization(String.join(",", costRecommendation.generateStorageCostRecommendations(dto)));
             result.add(dto);
         });
 
@@ -462,23 +484,24 @@ public class AzureVirtualMachineService {
         azure.disks().list().forEach(disk -> {
             log.info("Processing disk: {} in resource group: {}", disk.name(), disk.resourceGroupName());
             AzureDiskDto dto = AzureDiskDto.builder()
-                    .name(disk.name())
-                    .resourceGroup(disk.resourceGroupName())
-                    .region(disk.regionName())
-                    .sizeInGb(disk.sizeInGB())
-                    .sku(disk.sku() != null ? disk.sku().toString() : null)
+                    .subscriptionId(Optional.ofNullable(azure.getCurrentSubscription()).map(Subscription::displayName).orElse(Strings.EMPTY))
+                    .diskName(Optional.ofNullable(disk.name()).orElse(Strings.EMPTY))
+                    .resourceGroup(Optional.ofNullable(disk.resourceGroupName()).orElse(Strings.EMPTY))
+                    .region(Optional.ofNullable(disk.regionName()).orElse(Strings.EMPTY))
+                    .sizeInGb(Optional.of(disk.sizeInGB()).orElse(0))
+                    .sku(Optional.ofNullable(disk.sku()).map(DiskSkuTypes::toString).orElse(Strings.EMPTY))
                     .osType(disk.osType() != null ? disk.osType().toString() : "DataDisk")
                     .isAttachedToVm(Optional.of(disk.isAttachedToVirtualMachine()).orElse(false))
                     .diskSizeGb(Optional.ofNullable(disk.innerModel().diskSizeGB()).orElse(0))
-                    .diskState(disk.innerModel().diskState().getValue())
+                    .diskState(Optional.ofNullable(disk.innerModel()).map(DiskInner::diskState).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
                     .diskIopsReadOnly(Optional.ofNullable(disk.innerModel().diskIopsReadOnly()).orElse(0L))
                     .diskIopsReadWrite(Optional.ofNullable(disk.innerModel().diskIopsReadWrite()).orElse(0L))
                     .diskMBpsReadOnly(Optional.ofNullable(disk.innerModel().diskMBpsReadOnly()).orElse(0L))
                     .diskMBpsReadWrite(Optional.ofNullable(disk.innerModel().diskMBpsReadWrite()).orElse(0L))
-                    .diskCost(calculateCost(costExplorer, disk.innerModel().name().toLowerCase()))
+                    .diskCost(roundToFourDecimals(calculateCost(costExplorer, disk.innerModel().name().toLowerCase())))
                     .build();
             isVmAttached(disk, azure, dto);
-            dto.setCostOptimization(costRecommendation.generateDiskCostRecommendations(dto));
+            dto.setCostOptimization(String.join(",", costRecommendation.generateDiskCostRecommendations(dto)));
             result.add(dto);
         });
         return result;
@@ -664,50 +687,38 @@ public class AzureVirtualMachineService {
 
 
     private List<AzureSqlServiceDto> fetchSqlDatabases(AzureResourceManager azure,
-                                                       Map<String, Map<String, Object>> costExplorer) {
+                                                       Map<String, Map<String, Object>> costExplorer, String subscriptionId) {
         List<AzureSqlServiceDto> inventoryList = new ArrayList<>();
         log.info("Fetching SQL Databases...");
         try {
-            PagedIterable<SqlServer> sqlServers = azure.sqlServers().list();
+            List<SqlServer> sqlServers = azure.sqlServers().list().stream().toList();
             sqlServers.forEach(sqlServer -> {
                 log.info("Processing SQL Server: {} in resource group: {}", sqlServer.name(), sqlServer.resourceGroupName());
                 List<SqlDatabase> databases = sqlServer.databases().list();
                 databases.forEach(sqlDatabase -> {
+
                     log.info("Processing SQL Database: {} in SQL Server: {}", sqlDatabase.name(), sqlServer.name());
-                    Boolean securityPolicyEnabled = null;
-                    try {
-                        if (sqlDatabase.getThreatDetectionPolicy() != null) {
-                            securityPolicyEnabled =
-                                    sqlDatabase.getThreatDetectionPolicy()
-                                            .isDefaultSecurityAlertPolicy();
-                        }
-                    } catch (Exception ignored) {
-                        securityPolicyEnabled = null;
-                    }
                     AzureSqlServiceDto sqlServiceDto = AzureSqlServiceDto.builder()
-                            .databaseId(sqlDatabase.databaseId())
-                            .databaseName(sqlDatabase.name())
-                            .region(sqlDatabase.region() != null
-                                    ? sqlDatabase.region().label()
-                                    : null)
-                            .resourceGroupName(sqlDatabase.resourceGroupName())
-                            .creationDate(sqlDatabase.creationDate() != null
-                                    ? sqlDatabase.creationDate().toString()
-                                    : null)
-                            .defaultSecondaryLocation(sqlDatabase.defaultSecondaryLocation())
-                            .edition(sqlDatabase.edition() != null
-                                    ? sqlDatabase.edition().getValue()
-                                    : null)
-                            .collation(sqlDatabase.collation())
-                            .isDefaultSecurityAlertPolicyEnabled(securityPolicyEnabled)
-                            .status(sqlDatabase.status() != null
-                                    ? sqlDatabase.status().getValue()
-                                    : null)
-                            .sqlServerName(sqlDatabase.sqlServerName())
-                            .elasticPoolName(sqlDatabase.elasticPoolName())
-                            .databaseCost(calculateCost(costExplorer, sqlDatabase.name()))
+                            .subscriptionId(Optional.ofNullable(azure.getCurrentSubscription()).map(Subscription::displayName).orElse(Strings.EMPTY))
+                            .databaseId(Optional.ofNullable(sqlDatabase.databaseId()).orElse(Strings.EMPTY))
+                            .databaseName(Optional.ofNullable(sqlDatabase.name()).orElse(Strings.EMPTY))
+                            .region(Optional.ofNullable(sqlDatabase.regionName()).orElse(Strings.EMPTY))
+                            .resourceGroupName(Optional.ofNullable(sqlDatabase.resourceGroupName()).orElse(Strings.EMPTY))
+                            .creationDate(Optional.ofNullable(sqlDatabase.creationDate()).map(OffsetDateTime::toString).orElse(Strings.EMPTY))
+                            .defaultSecondaryLocation(Optional.ofNullable(sqlDatabase.defaultSecondaryLocation()).orElse(Strings.EMPTY))
+                            .edition(Optional.ofNullable(sqlDatabase.edition()).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
+                            .sku(Optional.ofNullable(sqlDatabase.innerModel()).map(DatabaseInner::sku).map(Sku::name).orElse(Strings.EMPTY))
+                            .collation(Optional.ofNullable(sqlDatabase.collation()).orElse(Strings.EMPTY))
+                            .isDefaultSecurityAlertPolicyEnabled(Optional.ofNullable(sqlDatabase.getThreatDetectionPolicy()).map(SqlDatabaseThreatDetectionPolicy::isDefaultSecurityAlertPolicy).orElse(false))
+                            .status(Optional.ofNullable(sqlDatabase.status()).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
+                            .sqlServerName(Optional.ofNullable(sqlDatabase.sqlServerName()).orElse(Strings.EMPTY))
+                            .elasticPoolName(Optional.ofNullable(sqlDatabase.elasticPoolName()).orElse(Strings.EMPTY))
+                            .databaseCost(roundToFourDecimals(calculateCost(costExplorer, sqlDatabase.name())))
+                            .avgCpuPercent(fetchSqlMetrics(subscriptionId, sqlDatabase.id(), "cpu_percent", "Average", 15))
+                            .avgStoragePercent(fetchSqlMetrics(subscriptionId, sqlDatabase.id(), "storage_percent", "Average", 15))
+                            .totalConnectionsSuccessful(fetchSqlMetrics(subscriptionId, sqlDatabase.id(), "connection_successful", "Total", 15))
                             .build();
-                    sqlServiceDto.setCostOptimization(costRecommendation.generateSqlCostRecommendations(sqlServiceDto));
+                    sqlServiceDto.setCostOptimization(String.join(",", costRecommendation.generateSqlCostRecommendations(sqlServiceDto)));
                     inventoryList.add(sqlServiceDto);
                 });
             });
@@ -716,6 +727,66 @@ public class AzureVirtualMachineService {
         }
         return inventoryList;
     }
+
+    public double fetchSqlMetrics(String subscriptionId, String resourceId, String metricName, String aggregation,
+                                  int days) {
+
+        TokenCredential credential = new ClientSecretCredentialBuilder()
+                .tenantId(azureConfig.getTenantId())
+                .clientId(azureConfig.getClientId())
+                .clientSecret(azureConfig.getClientSecret())
+                .build();
+
+        MonitorManager monitorManager = MonitorManager
+                .configure()
+                .authenticate(credential, buildProfile(subscriptionId));
+
+        OffsetDateTime endTime = OffsetDateTime.now(ZoneOffset.UTC);
+        OffsetDateTime startTime = endTime.minusDays(days);
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'"); // UTC
+        String timespan = startTime.format(formatter) + "/" + endTime.format(formatter);
+
+        Response<ResponseInner> innerResponse = monitorManager.serviceClient().getMetrics().listWithResponse(
+                resourceId,
+                timespan,
+                Duration.ofDays(1),
+                metricName,
+                aggregation,
+                null, null, null, null, null,
+                Context.NONE
+        );
+
+        double totalValue = 0;
+        int dataPointCount = 0;
+
+        if (innerResponse.getValue() != null && !innerResponse.getValue().value().isEmpty()) {
+            MetricInner metric = innerResponse.getValue().value().get(0); // Get the requested metric
+
+            for (TimeSeriesElement ts : metric.timeseries()) {
+                for (MetricValue val : ts.data()) {
+                    Double value = null;
+
+                    // Direct mapping based on the requested aggregation
+                    if ("Average".equalsIgnoreCase(aggregation)) value = val.average();
+                    else if ("Total".equalsIgnoreCase(aggregation)) value = val.total();
+                    else if ("Maximum".equalsIgnoreCase(aggregation)) value = val.maximum();
+
+                    if (value != null) {
+                        totalValue += value;
+                        dataPointCount++;
+                    }
+                }
+            }
+        }
+
+        // Return average if it's a percentage-based metric, otherwise return total
+        if (metricName.toLowerCase().contains("percent") && dataPointCount > 0) {
+            return totalValue / dataPointCount;
+        }
+
+        return totalValue;
+    }
+
 
     private List<AzureKubernetesDto> fetchAksClusters(AzureResourceManager azure) {
         List<AzureKubernetesDto> result = new ArrayList<>();
@@ -825,50 +896,66 @@ public class AzureVirtualMachineService {
         return result;
     }
 
-    private List<AzureLoadBalancerDto> fetchLoadBalancers(AzureResourceManager azure) {
+    private List<AzureLoadBalancerDto> fetchLoadBalancers(AzureResourceManager azure,
+                                                          Map<String, Map<String, Object>> costExplorer) {
         List<AzureLoadBalancerDto> result = new ArrayList<>();
         log.info("Fetching Load Balancers...");
         azure.loadBalancers().list().forEach(lb -> {
             log.info("Processing Load Balancer: {} in resource group: {}", lb.name(), lb.resourceGroupName());
             AzureLoadBalancerDto dto = AzureLoadBalancerDto.builder()
-                    .name(lb.name())
-                    .resourceGroup(lb.resourceGroupName())
-                    .region(lb.regionName())
-                    .sku(lb.sku() != null ? lb.sku().sku().name().getValue() : null)
-                    .frontendIpCount(lb.frontends() != null ?
-                            lb.frontends().size() : 0)
-                    .backendPoolCount(lb.backends() != null ?
-                            lb.backends().size() : 0)
-                    .ruleCount(lb.loadBalancingRules() != null ?
-                            lb.loadBalancingRules().size() : 0)
+                    .subscriptionId(Optional.ofNullable(azure.getCurrentSubscription()).map(Subscription::displayName).orElse(Strings.EMPTY))
+                    .loadBalancerName(Optional.ofNullable(lb.name()).orElse(Strings.EMPTY))
+                    .resourceGroup(Optional.ofNullable(lb.resourceGroupName()).orElse(Strings.EMPTY))
+                    .region(Optional.ofNullable(lb.regionName()).orElse(Strings.EMPTY))
+                    .sku(Optional.ofNullable(lb.sku()).map(LoadBalancerSkuType::sku).map(LoadBalancerSku::name).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
+                    .frontendIpCount(lb.frontends() != null ? lb.frontends().size() : 0)
+                    .frontEndIds(lb.innerModel()
+                            .frontendIpConfigurations()
+                            .stream()
+                            .map(item -> extractLastSegment(item.id()))
+                            .collect(Collectors.joining(",")))
+                    .privateIpAddresses(lb.innerModel()
+                            .frontendIpConfigurations()
+                            .stream()
+                            .map(FrontendIpConfigurationInner::privateIpAddress)
+                            .collect(Collectors.joining(",")))
+                    .backendPoolCount(lb.backends() != null ? lb.backends().size() : 0)
+                    .backendIds(lb.innerModel()
+                            .backendAddressPools()
+                            .stream()
+                            .map(BackendAddressPoolInner::name)
+                            .collect(Collectors.joining(",")))
+                    .ruleCount(lb.loadBalancingRules() != null ? lb.loadBalancingRules().size() : 0)
                     .probeCount(lb.innerModel().probes().size())
+                    .cost(roundToFourDecimals(calculateCost(costExplorer, lb.name().toLowerCase())))
                     .build();
+                    dto.setCostOptimization(String.join(",", costRecommendation.generateLoadBalancerCostRecommendations(dto)));
             result.add(dto);
         });
         return result;
     }
 
-    private List<AzureSnapshotDto> fetchSnapshots(AzureResourceManager azure) {
+    private List<AzureSnapshotDto> fetchSnapshots(AzureResourceManager azure,
+                                                  Map<String, Map<String, Object>> costExplorer) {
         List<AzureSnapshotDto> result = new ArrayList<>();
         log.info("Fetching Snapshots...");
         azure.snapshots().list().forEach(snapshot -> {
             log.info("Processing Snapshot: {} in resource group: {}", snapshot.name(), snapshot.resourceGroupName());
             AzureSnapshotDto dto = AzureSnapshotDto.builder()
-                    .name(snapshot.name())
-                    .resourceGroup(snapshot.resourceGroupName())
-                    .region(snapshot.regionName())
-                    .diskSizeGb(snapshot.sizeInGB())
-                    .sku(snapshot.skuType().accountType().getValue())
-                    .osType(snapshot.osType() != null ? snapshot.osType().toString() : null)
-                    .creationData(snapshot.innerModel().creationData() != null
-                            ? snapshot.innerModel().creationData().createOption().toString() : null)
-                    .timeCreated(snapshot.innerModel().timeCreated() != null
-                            ? snapshot.innerModel().timeCreated().toString() : null)
-                    .sourceResourceId(snapshot.innerModel().creationData() != null
-                            ? snapshot.innerModel().creationData().sourceResourceId()
-                            : null)
-                    .provisioningState(snapshot.innerModel().provisioningState())
+                    .subscriptionId(Optional.ofNullable(azure.getCurrentSubscription()).map(Subscription::displayName).orElse(Strings.EMPTY))
+                    .snapshotName(Optional.ofNullable(snapshot.name()).orElse(Strings.EMPTY))
+                    .resourceGroup(Optional.ofNullable(snapshot.resourceGroupName()).orElse(Strings.EMPTY))
+                    .region(Optional.ofNullable(snapshot.regionName()).orElse(Strings.EMPTY))
+                    .diskSizeGb(Optional.of(snapshot.sizeInGB()).orElse(0))
+                    .sku(Optional.ofNullable(snapshot.skuType()).map(SnapshotSkuType::accountType).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
+                    .osType(Optional.ofNullable(snapshot.osType()).map(OperatingSystemTypes::toString).orElse(Strings.EMPTY))
+                    .creationData(Optional.ofNullable(snapshot.innerModel()).map(SnapshotInner::creationData).map(Objects::toString).orElse(Strings.EMPTY))
+                    .timeCreated(Optional.ofNullable(snapshot.innerModel()).map(SnapshotInner::timeCreated).map(OffsetDateTime::toString).orElse(Strings.EMPTY))
+                    .sourceResourceId(Optional.ofNullable(snapshot.innerModel()).map(SnapshotInner::creationData).map(CreationData::sourceResourceId).orElse(Strings.EMPTY))
+                    .provisioningState(Optional.ofNullable(snapshot.innerModel()).map(SnapshotInner::provisioningState).orElse(Strings.EMPTY))
+                    .cost(roundToFourDecimals(calculateCost(costExplorer, snapshot.name().toLowerCase())))
                     .build();
+            dto.setCostOptimization(String.join(",", costRecommendation.generateSnapshotCostRecommendations(dto)));
             result.add(dto);
         });
 
@@ -1146,24 +1233,58 @@ public class AzureVirtualMachineService {
         azure.publicIpAddresses().list().forEach(ip -> {
             log.info("Processing public ips: {} in resource group: {}", ip.name(), ip.resourceGroupName());
             AzurePublicIpsDto dto = AzurePublicIpsDto.builder()
-                    .name(ip.name())
-                    .resourceGroup(ip.resourceGroupName())
-                    .region(ip.regionName())
-                    .ipAddress(ip.ipAddress())
-                    .allocationMethod(ip.innerModel().publicIpAllocationMethod() != null
-                            ? ip.innerModel().publicIpAllocationMethod().toString()
-                            : null)
+                    .subscriptionId(Optional.ofNullable(azure.getCurrentSubscription()).map(Subscription::displayName).orElse(Strings.EMPTY))
+                    .ipName(Optional.ofNullable(ip.name()).orElse(Strings.EMPTY))
+                    .resourceGroup(Optional.ofNullable(ip.resourceGroupName()).orElse(Strings.EMPTY))
+                    .region(Optional.ofNullable(ip.regionName()).orElse(Strings.EMPTY))
+                    .ipAddress(Optional.ofNullable(ip.ipAddress()).orElse(Strings.EMPTY))
+                    .allocationMethod(Optional.ofNullable(ip.innerModel()).map(PublicIpAddressInner::publicIpAllocationMethod).map(Objects::toString).orElse(Strings.EMPTY))
                     .idleTimeoutInMinutes(Optional.ofNullable(ip.innerModel().idleTimeoutInMinutes()).orElse(0))
                     .publicIpAddressType(Optional.of(extractLastSegment(ip.innerModel().type())).orElse(""))
-                    .publicIpAddressVersion(ip.innerModel().publicIpAddressVersion() != null
-                            ? ip.innerModel().publicIpAddressVersion().getValue()
-                            : null)
-                    .publicIpCost(calculateCost(costExplorer, ip.name().toLowerCase()))
+                    .publicIpAddressVersion(Optional.ofNullable(ip.innerModel()).map(PublicIpAddressInner::publicIpAddressVersion).map(ExpandableStringEnum::getValue).orElse(Strings.EMPTY))
+                    .publicIpCost(roundToFourDecimals(calculateCost(costExplorer, ip.name().toLowerCase())))
                     .build();
-            dto.setCostOptimization(costRecommendation.generatePublicIpCostRecommendations(dto));
+            dto.setCostOptimization(String.join(",", costRecommendation.generatePublicIpCostRecommendations(dto)));
             result.add(dto);
         });
         return result;
+    }
+
+    private List<AzureNatGatewayDto> fetchNatGateways(AzureResourceManager azure,
+                                                      Map<String, Map<String, Object>> costExplorer) {
+
+        List<AzureNatGatewayDto> result = new ArrayList<>();
+        log.info("Fetching NAT Gateways...");
+        azure.networks().manager().serviceClient().getNatGateways().list().forEach(natGateway -> {
+                    log.info("Processing NAT Gateway: {}", natGateway.name());
+                    List<String> ipIds = natGateway.publicIpAddresses() != null
+                            ? natGateway.publicIpAddresses().stream().map(SubResource::id).map(this::extractLastSegment).toList()
+                            : new ArrayList<>();
+                    List<String> subnetIds = natGateway.subnets() != null
+                            ? natGateway.subnets().stream().map(SubResource::id).map(this::extractLastSegment).toList()
+                            : new ArrayList<>();
+                    AzureNatGatewayDto dto = AzureNatGatewayDto.builder()
+                            .subscriptionId(Optional.ofNullable(azure.getCurrentSubscription()).map(Subscription::displayName).orElse(Strings.EMPTY))
+                            .natName(Optional.ofNullable(natGateway.name()).orElse(Strings.EMPTY))
+                            .resourceGroup(Optional.ofNullable(getResourceGroupNameFromId(natGateway.id())).orElse(Strings.EMPTY))
+                            .region(Optional.ofNullable(natGateway.location()).orElse(Strings.EMPTY))
+                            .idleTimeoutInMinutes(Optional.ofNullable(natGateway.idleTimeoutInMinutes()).orElse(0))
+                            .publicIpCount(Optional.of(ipIds.size()).orElse(0))
+                            .publicIpIds(String.join(",", ipIds))
+                            .subnetCount(Optional.of(subnetIds.size()).orElse(0))
+                            .subnetIds(String.join(",", subnetIds))
+                            .natGatewayCost(roundToFourDecimals(calculateCost(costExplorer, natGateway.name().toLowerCase())))
+                            .build();
+                    dto.setCostOptimization(String.join(",", costRecommendation.generateNatGatewayCostRecommendations(dto)));
+                    result.add(dto);
+                });
+        return result;
+    }
+
+    private String getResourceGroupNameFromId(String id) {
+        if (id == null) return null;
+        String[] parts = id.split("/");
+        return parts.length > 4 ? parts[4] : "unknown";
     }
 
 

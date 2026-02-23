@@ -47,6 +47,7 @@ dependencies {
 	implementation 'com.azure.resourcemanager:azure-resourcemanager-managementgroups:1.0.0-beta.2'
 	implementation 'com.azure.resourcemanager:azure-resourcemanager-costmanagement:1.0.0-beta.3'
 	implementation 'com.azure.resourcemanager:azure-resourcemanager-monitor:2.35.0'
+	implementation 'com.azure.resourcemanager:azure-resourcemanager-network:2.30.0'
 
 
 
