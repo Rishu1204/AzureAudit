@@ -81,7 +81,7 @@ public class AzureVirtualMachineService {
                 CompletableFuture<List<AzureVirtualNetworksDto>> networks =
                         supplyAsyncSafe(() -> fetchNetworks(azure), executor);
                 CompletableFuture<List<AzureStorageAccountDto>> storage =
-                        supplyAsyncSafe(() -> fetchStorageAccounts(azure, costAnalysis), executor);
+                        supplyAsyncSafe(() -> fetchStorageAccounts(azure, costAnalysis, subscriptionId), executor);
                 CompletableFuture<List<AzureDiskDto>> disks =
                         supplyAsyncSafe(() -> fetchDisks(azure, costAnalysis), executor);
                 CompletableFuture<List<AzureFunctionAppDto>> functions =
@@ -359,7 +359,8 @@ public class AzureVirtualMachineService {
     }
 
     private List<AzureStorageAccountDto> fetchStorageAccounts(AzureResourceManager azure,
-                                                              Map<String, Map<String, Object>> costExplorer) {
+                                                              Map<String, Map<String, Object>> costExplorer,
+                                                              String subscriptionId) {
         List<AzureStorageAccountDto> result = new ArrayList<>();
         log.info("Fetching storage accounts...");
         azure.storageAccounts().list().forEach(storage -> {
@@ -398,6 +399,7 @@ public class AzureVirtualMachineService {
                     .primaryStatus(storage.accountStatuses().primary().name())
                     .blobContainers(containerNames)
                     .queueNames(queueNames)
+                    .storageUsedGb(getStorageUsedInGB(subscriptionId, storage.id(), 15))
                     .storageAccountCost(calculateCost(costExplorer, storage.innerModel().name().toLowerCase()))
                     .build();
             dto.setCostOptimization(costRecommendation.generateStorageCostRecommendations(dto));
@@ -405,6 +407,51 @@ public class AzureVirtualMachineService {
         });
 
         return result;
+    }
+
+    private double getStorageUsedInGB(String subscriptionId,  String storageId, int days) {
+
+        try {
+            MonitorManager monitorManager = MonitorManager.authenticate(buildCredentials(), buildProfile(subscriptionId));
+            String resourceId = storageId;
+            OffsetDateTime endTime = OffsetDateTime.now(ZoneOffset.UTC);
+            OffsetDateTime startTime = endTime.minusDays(days);
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'"); // UTC
+            String timespan = startTime.format(formatter) + "/" + endTime.format(formatter);
+            Response<ResponseInner> response = monitorManager.serviceClient()
+                    .getMetrics()
+                    .listWithResponse(
+                            resourceId,
+                            timespan,
+                            Duration.ofHours(1),
+                            "UsedCapacity",
+                            "Maximum",
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            Context.NONE
+                    );
+
+            ResponseInner metricValue = response.getValue();
+            if (metricValue.value() != null && !metricValue.value().isEmpty()) {
+                MetricInner metricInner = metricValue.value().get(0);
+                for (TimeSeriesElement ts : metricInner.timeseries()) {
+                    for (MetricValue data : ts.data()) {
+                        if (data.maximum() != null) {
+                            double bytes = data.maximum();
+                            return bytes / (1024 * 1024);
+                        }
+                    }
+                }
+            }
+
+        } catch (Exception e) {
+            log.error("Error fetching storage size for {}", storageId, e);
+        }
+
+        return 0.0;
     }
 
 

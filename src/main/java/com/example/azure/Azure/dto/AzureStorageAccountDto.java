@@ -20,6 +20,7 @@ public class AzureStorageAccountDto {
     private String primaryStatus;
     private List<String> blobContainers;
     private List<String> queueNames;
+    private Double storageUsedGb;
     private double storageAccountCost;
     private List<String> costOptimization;
 
