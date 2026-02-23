@@ -9,6 +9,8 @@ import com.azure.core.util.Context;
 import com.azure.identity.ClientSecretCredentialBuilder;
 import com.azure.resourcemanager.AzureResourceManager;
 import com.azure.resourcemanager.apimanagement.ApiManagementManager;
+import com.azure.resourcemanager.compute.models.Disk;
+import com.azure.resourcemanager.compute.models.VirtualMachine;
 import com.azure.resourcemanager.containerservice.models.KubernetesClusterAgentPool;
 import com.azure.resourcemanager.loganalytics.LogAnalyticsManager;
 import com.azure.resourcemanager.managementgroups.ManagementGroupsManager;
@@ -418,7 +420,8 @@ public class AzureVirtualMachineService {
                     .region(disk.regionName())
                     .sizeInGb(disk.sizeInGB())
                     .sku(disk.sku() != null ? disk.sku().toString() : null)
-                    .osType(disk.osType() != null ? disk.osType().toString() : null)
+                    .osType(disk.osType() != null ? disk.osType().toString() : "DataDisk")
+                    .isAttachedToVm(Optional.of(disk.isAttachedToVirtualMachine()).orElse(false))
                     .diskSizeGb(Optional.ofNullable(disk.innerModel().diskSizeGB()).orElse(0))
                     .diskState(disk.innerModel().diskState().getValue())
                     .diskIopsReadOnly(Optional.ofNullable(disk.innerModel().diskIopsReadOnly()).orElse(0L))
@@ -427,10 +430,40 @@ public class AzureVirtualMachineService {
                     .diskMBpsReadWrite(Optional.ofNullable(disk.innerModel().diskMBpsReadWrite()).orElse(0L))
                     .diskCost(calculateCost(costExplorer, disk.innerModel().name().toLowerCase()))
                     .build();
+            isVmAttached(disk, azure, dto);
             dto.setCostOptimization(costRecommendation.generateDiskCostRecommendations(dto));
             result.add(dto);
         });
         return result;
+    }
+
+    private void isVmAttached(Disk disk, AzureResourceManager azure, AzureDiskDto dto) {
+
+        Map<String, String> vmMap = new HashMap<>();
+
+        if (!disk.isAttachedToVirtualMachine() || disk.virtualMachineIds().isEmpty()) {
+            vmMap.put("Not Attached", "NA");
+            dto.setAttachedVm(vmMap);
+            return;
+        }
+        for (String vmId : disk.virtualMachineIds()) {
+            try {
+                VirtualMachine vm = azure.virtualMachines().getById(vmId);
+                if (vm != null) {
+                    String vmName = vm.name();
+                    String vmState = vm.powerState() != null
+                            ? extractLastSegment(vm.powerState().getValue())
+                            : "Unknown";
+                    vmMap.put(vmName, vmState);
+                } else {
+                    vmMap.put("Unknown VM", "Unknown");
+                }
+            } catch (Exception e) {
+                log.error("Failed to fetch VM details for disk attachment", e);
+            }
+        }
+
+        dto.setAttachedVm(vmMap);
     }
 
     private List<AzureFunctionAppDto> fetchFunctionApps(AzureResourceManager azure) {

@@ -3,6 +3,7 @@ package com.example.azure.Azure.dto;
 import lombok.*;
 
 import java.util.List;
+import java.util.Map;
 
 @AllArgsConstructor
 @NoArgsConstructor
@@ -16,6 +17,8 @@ public class AzureDiskDto {
     private Integer sizeInGb;
     private String sku;
     private String osType;
+    private boolean isAttachedToVm;
+    private Map<String, String> attachedVm;
     private Integer diskSizeGb;
     private String diskState;
     private Long diskIopsReadOnly;

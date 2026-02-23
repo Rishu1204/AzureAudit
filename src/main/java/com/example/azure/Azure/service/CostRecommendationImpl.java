@@ -5,7 +5,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 @Slf4j
@@ -82,17 +84,6 @@ public class CostRecommendationImpl {
             );
         }
 
-        // ===============================
-        // 6️⃣ SPOT VM
-        // ===============================
-        if ("spot".equalsIgnoreCase(vm.getPriority())) {
-
-            recommendations.add(
-                    "VM '" + vm.getName()
-                            + "' is using Spot priority. While cost-effective, "
-                            + "ensure workload can tolerate eviction."
-            );
-        }
 
         return recommendations;
     }
@@ -129,15 +120,15 @@ public class CostRecommendationImpl {
         // ================================
         // 2️⃣ High Monthly Cost
         // ================================
-        if (cost > 500) {
-
-            recommendations.add(
-                    "SQL Database '" + db.getDatabaseName()
-                            + "' has high monthly cost ($" + cost
-                            + "). Review vCore/DTU utilization and consider "
-                            + "rightsizing or purchasing Reserved Capacity."
-            );
-        }
+//        if (cost > 500) {
+//
+//            recommendations.add(
+//                    "SQL Database '" + db.getDatabaseName()
+//                            + "' has high monthly cost ($" + cost
+//                            + "). Review vCore/DTU utilization and consider "
+//                            + "rightsizing or purchasing Reserved Capacity."
+//            );
+//        }
 
         // ================================
         // 3️⃣ Premium / Business Critical Tier
@@ -250,15 +241,15 @@ public class CostRecommendationImpl {
         // =====================================
         // 1️⃣ High Monthly Cost
         // =====================================
-        if (cost > 300) {
-
-            recommendations.add(
-                    "Storage Account '" + storage.getName()
-                            + "' has high monthly cost ($" + cost
-                            + "). Review data growth, lifecycle policies, "
-                            + "and replication configuration for optimization opportunities."
-            );
-        }
+//        if (cost > 300) {
+//
+//            recommendations.add(
+//                    "Storage Account '" + storage.getName()
+//                            + "' has high monthly cost ($" + cost
+//                            + "). Review data growth, lifecycle policies, "
+//                            + "and replication configuration for optimization opportunities."
+//            );
+//        }
 
         // =====================================
         // 2️⃣ Premium SKU Review
@@ -326,84 +317,75 @@ public class CostRecommendationImpl {
         List<String> recommendations = new ArrayList<>();
 
         double cost = Math.max(disk.getDiskCost(), 0.0);
+        String sku = disk.getSku() != null ? disk.getSku().toLowerCase() : "";
+        String diskState = disk.getDiskState() != null ? disk.getDiskState().toLowerCase() : "";
 
-
-        String sku = disk.getSku() != null
-                ? disk.getSku().toLowerCase()
-                : "";
-
-        String diskState = disk.getDiskState() != null
-                ? disk.getDiskState().toLowerCase()
-                : "";
+        Map<String, String> attachedVms =
+                disk.getAttachedVm() != null ? disk.getAttachedVm() : new HashMap<>();
 
         // =====================================
-        // 1️⃣ Unattached Disk (Major Waste)
+        // 1️⃣ Disk Completely Unattached
         // =====================================
-        if (diskState.contains("unattached")) {
+        boolean isUnattached =
+                diskState.contains("unattached") ||
+                        attachedVms.isEmpty() ||
+                        attachedVms.containsKey("Not Attached");
+
+        if (isUnattached) {
 
             recommendations.add(
-                    "Disk '" + disk.getName()
-                            + "' is currently unattached. Unused managed disks "
-                            + "continue to incur storage charges. Consider deleting "
-                            + "if no longer required."
+                    "Disk '" + disk.getName() +
+                            "' is not attached to any VM and continues to incur storage charges. " +
+                            "If not required, consider deleting it to reduce cost."
             );
+
+            // If unattached, no need to evaluate VM states
+            return recommendations;
         }
 
         // =====================================
-        // 2️⃣ High Cost Disk
+        // 2️⃣ Attached to Stopped VM(s)
         // =====================================
-        if (cost > 200) {
+        attachedVms.forEach((vmName, vmState) -> {
+
+            if (vmState != null &&
+                    vmState.toLowerCase().contains("stopped")) {
+
+                recommendations.add(
+                        "Disk '" + disk.getName() +
+                                "' is attached to stopped VM '" + vmName +
+                                "'. Storage charges continue even when VM is stopped."
+                );
+            }
+        });
+
+        // =====================================
+        // 3️⃣ High Monthly Cost
+//        // =====================================
+//        if (cost > 150) {
+//
+//            recommendations.add(
+//                    "Disk '" + disk.getName() +
+//                            "' has relatively high monthly cost ($" + cost +
+//                            "). Review disk size and tier for optimization."
+//            );
+//        }
+
+        // =====================================
+        // 4️⃣ Premium / Ultra Tier Review
+        // =====================================
+        if (sku.contains("premium") || sku.contains("ultra")) {
 
             recommendations.add(
-                    "Disk '" + disk.getName()
-                            + "' has high monthly cost ($" + cost
-                            + "). Review disk tier, size, and performance requirements "
-                            + "for optimization opportunities."
-            );
-        }
-
-        // =====================================
-        // 3️⃣ Premium SKU Review
-        // =====================================
-        if (sku.contains("premium")) {
-
-            recommendations.add(
-                    "Disk '" + disk.getName()
-                            + "' is using Premium tier (" + disk.getSku()
-                            + "). Ensure workload requires high IOPS/throughput. "
-                            + "Otherwise consider Standard SSD to reduce cost."
-            );
-        }
-
-        // =====================================
-        // 4️⃣ Oversized Disk
-        // =====================================
-        if (disk.getDiskSizeGb() > 1024) {
-
-            recommendations.add(
-                    "Disk '" + disk.getName()
-                            + "' is larger than 1TB. Validate actual utilization "
-                            + "and consider resizing if storage is over-provisioned."
-            );
-        }
-
-        // =====================================
-        // 5️⃣ High Provisioned IOPS Not Justified
-        // =====================================
-        if (disk.getDiskIopsReadWrite() > 5000
-                && !sku.contains("ultra")) {
-
-            recommendations.add(
-                    "Disk '" + disk.getName()
-                            + "' has high provisioned IOPS ("
-                            + disk.getDiskIopsReadWrite()
-                            + "). Ensure workload requires this performance level "
-                            + "to justify associated cost."
+                    "Disk '" + disk.getName() +
+                            "' is using high-performance tier (" + disk.getSku() +
+                            "). Validate workload requires this performance level."
             );
         }
 
         return recommendations;
     }
+
 
     public List<String> generatePublicIpCostRecommendations(AzurePublicIpsDto ip) {
 
