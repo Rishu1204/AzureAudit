@@ -1399,6 +1399,7 @@ public class AzureVirtualMachineService {
             writeSheet(workbook, "WebPubSubServices", response.getAzureWebPubSubServices());
             writeSheet(workbook, "ServiceBus", response.getAzureServiceBus());
             writeSheet(workbook, "Ip Address", response.getAzurePublicIps());
+            writeSheet(workbook, "Nat Gateway", response.getAzureNatGateways());
         }
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
